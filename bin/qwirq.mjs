@@ -135,7 +135,9 @@ async function main() {
       if (sub === 'reveal') {
         if (!name) return fail('usage: qwirq secret reveal <name>')
         const r = await apiFetch('POST', `/api/v1/secrets/${encodeURIComponent(name)}/reveal`)
-        out(r.value)
+        out(r.value) // value to stdout (clean for pipes)
+        // handling guidance to stderr, so it never contaminates a pipe
+        process.stderr.write('Sensitive: do not save to disk, logs, or shell history.\n')
         return
       }
       if (sub === 'set') {
