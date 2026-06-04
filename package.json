@@ -1,0 +1,15 @@
+{
+  "name": "@qwirq/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "qwirq": "bin/qwirq.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "qwirq": "node bin/qwirq.mjs"
+  }
+}
