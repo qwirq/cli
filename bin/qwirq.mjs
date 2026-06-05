@@ -24,10 +24,16 @@ const HELP = `qwirq — Knowledge (Texere) + Secrets from the terminal
   qwirq secret reveal <name>        print a secret value (audited)
   qwirq secret set <name> [--stdin] set a secret (hidden prompt, or value from stdin)
   qwirq secret rm <name>            delete a secret
-  qwirq secret share <name> <email|role> [--role] [--read|--manage|--own]
-  qwirq secret unshare <name> <email|role> [--role]
+  qwirq secret share <name> <email|role|group> [--role|--group] [--read|--manage|--own]
+  qwirq secret unshare <name> <email|role|group> [--role|--group]
   qwirq secret grants <name>        show who a secret is shared with
   qwirq members                     list your company's members
+
+  qwirq group ls                    list groups
+  qwirq group create <name>         create a group (admin)
+  qwirq group members <name>        list a group's members
+  qwirq group add <name> <email>    add a member to a group (admin)
+  qwirq group rm <name> <email>     remove a member from a group (admin)
 
 Endpoints come from ~/.qwirq/config.json (override: QWIRQ_API_URL, QWIRQ_AUTH_URL).`
 
@@ -163,26 +169,28 @@ async function main() {
       }
       if (sub === 'share') {
         const grantee = positional[2]
-        if (!name || !grantee) return fail('usage: qwirq secret share <name> <email|role> [--role] [--read|--manage|--own]')
-        const kind = flags.role ? 'role' : 'user'
+        if (!name || !grantee) return fail('usage: qwirq secret share <name> <email|role|group> [--role|--group] [--read|--manage|--own]')
+        const kind = flags.group ? 'group' : flags.role ? 'role' : 'user'
         const permission = flags.own ? 'own' : flags.manage ? 'manage' : 'read'
         await apiFetch('POST', `/api/v1/secrets/${encodeURIComponent(name)}/share`, { body: { grantee, kind, permission } })
-        out(`Shared ${name} with ${kind === 'role' ? '@' + grantee : grantee} (${permission}).`)
+        const tag = kind === 'group' ? '#' + grantee : kind === 'role' ? '@' + grantee : grantee
+        out(`Shared ${name} with ${tag} (${permission}).`)
         return
       }
       if (sub === 'unshare') {
         const grantee = positional[2]
-        if (!name || !grantee) return fail('usage: qwirq secret unshare <name> <email|role> [--role]')
-        const kind = flags.role ? 'role' : 'user'
+        if (!name || !grantee) return fail('usage: qwirq secret unshare <name> <email|role|group> [--role|--group]')
+        const kind = flags.group ? 'group' : flags.role ? 'role' : 'user'
         await apiFetch('DELETE', `/api/v1/secrets/${encodeURIComponent(name)}/share?kind=${kind}&grantee=${encodeURIComponent(grantee)}`)
-        out(`Unshared ${name} from ${kind === 'role' ? '@' + grantee : grantee}.`)
+        const tag = kind === 'group' ? '#' + grantee : kind === 'role' ? '@' + grantee : grantee
+        out(`Unshared ${name} from ${tag}.`)
         return
       }
       if (sub === 'grants') {
         if (!name) return fail('usage: qwirq secret grants <name>')
         const { grants } = await apiFetch('GET', `/api/v1/secrets/${encodeURIComponent(name)}/grants`)
         if (!grants.length) { out('(private — not shared)'); return }
-        for (const g of grants) out(`${g.permission.padEnd(7)} ${g.userEmail || '@' + g.roleName}`)
+        for (const g of grants) out(`${g.permission.padEnd(7)} ${g.userEmail || (g.roleName ? '@' + g.roleName : '#' + g.groupName)}`)
         return
       }
       return fail('usage: qwirq secret <ls|reveal|set|rm|share|unshare|grants>')
@@ -192,6 +200,48 @@ async function main() {
       const { members } = await apiFetch('GET', '/api/v1/members')
       for (const m of members) out(`${m.email}  (${m.roleName})`)
       return
+    }
+
+    case 'group': {
+      const sub = positional[0]
+      if (sub === 'ls') {
+        const { groups } = await apiFetch('GET', '/api/v1/groups')
+        if (!groups.length) { out('(no groups)'); return }
+        for (const g of groups) out(`${g.name}  (${g.memberCount} member${g.memberCount === 1 ? '' : 's'})`)
+        return
+      }
+      if (sub === 'create') {
+        const gname = positional.slice(1).join(' ').trim()
+        if (!gname) return fail('usage: qwirq group create <name>')
+        await apiFetch('POST', '/api/v1/groups', { body: { name: gname } })
+        out(`Created group ${gname}.`)
+        return
+      }
+      // member ops address a group by name
+      const gname = positional[1]
+      if (sub === 'members' || sub === 'add' || sub === 'rm') {
+        if (!gname) return fail(`usage: qwirq group ${sub} <group> ${sub === 'members' ? '' : '<email>'}`)
+        const { groups } = await apiFetch('GET', '/api/v1/groups')
+        const g = groups.find((x) => x.name.toLowerCase() === gname.toLowerCase())
+        if (!g) return fail(`no such group: ${gname}`)
+        if (sub === 'members') {
+          const { members } = await apiFetch('GET', `/api/v1/groups/${g.qid}/members`)
+          if (!members.length) { out('(no members)'); return }
+          for (const m of members) out(`${m.email}  (${m.roleName})`)
+          return
+        }
+        const email = positional[2]
+        if (!email) return fail(`usage: qwirq group ${sub} <group> <email>`)
+        if (sub === 'add') {
+          await apiFetch('POST', `/api/v1/groups/${g.qid}/members`, { body: { email } })
+          out(`Added ${email} to ${g.name}.`)
+        } else {
+          await apiFetch('DELETE', `/api/v1/groups/${g.qid}/members?email=${encodeURIComponent(email)}`)
+          out(`Removed ${email} from ${g.name}.`)
+        }
+        return
+      }
+      return fail('usage: qwirq group <ls|create|members|add|rm>')
     }
 
     default:
