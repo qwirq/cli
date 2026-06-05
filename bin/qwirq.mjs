@@ -11,14 +11,18 @@ const HELP = `qwirq — Knowledge (Texere) + Secrets from the terminal
   qwirq logout                      forget the stored token
   qwirq whoami                      show user + active company
 
-  qwirq weave ls                    list weaves
+  qwirq weave ls                    list weaves (🔒 = restricted)
   qwirq weave new <name>            create a weave
+  qwirq weave access <weaveQID>     show a weave's audience (open, or who it's restricted to)
+  qwirq weave restrict <weaveQID> <email|role|group> [--role|--group] [--manage] [--remove]
   qwirq tree <weaveQID>             show a weave's thread/article tree
 
   qwirq article get <qid>           print an article's markdown
   qwirq article edit <qid>          edit an article body in $EDITOR
   qwirq article new --weave <id> --title <t> [--thread <id>] [--file <f> | --stdin]
   qwirq article rm <qid>            delete an article (or thread) and its subtree
+  qwirq node access <qid>           show a document/thread's audience (open, or who it's restricted to)
+  qwirq node restrict <qid> <email|role|group> [--role|--group] [--manage] [--remove]
 
   qwirq secret ls [--mine|--company]   list secrets (scope + owner)
   qwirq secret reveal <name>        print a secret value (audited)
@@ -40,7 +44,7 @@ Endpoints come from ~/.qwirq/config.json (override: QWIRQ_API_URL, QWIRQ_AUTH_UR
 function indentTree(nodes, depth, lines) {
   for (const n of nodes || []) {
     const mark = n.kind === 'thread' ? '▸' : '·'
-    lines.push(`${'  '.repeat(depth)}${mark} ${n.title}  (${n.qid})`)
+    lines.push(`${'  '.repeat(depth)}${mark} ${n.restricted ? '🔒 ' : ''}${n.title}  (${n.qid})`)
     if (n.children?.length) indentTree(n.children, depth + 1, lines)
   }
 }
@@ -68,7 +72,7 @@ async function main() {
       if (sub === 'ls') {
         const { weaves } = await apiFetch('GET', '/api/v1/weaves')
         if (!weaves.length) { out('(no weaves)'); return }
-        for (const w of weaves) out(`${w.qid}\t${w.name}`)
+        for (const w of weaves) out(`${w.qid}\t${w.restricted ? '🔒 ' : ''}${w.name}`)
         return
       }
       if (sub === 'new') {
@@ -78,7 +82,33 @@ async function main() {
         out(`created weave ${r.weaveQID}  ${r.name}`)
         return
       }
-      return fail('usage: qwirq weave <ls|new>')
+      if (sub === 'access') {
+        const weaveQID = positional[1]
+        if (!weaveQID) return fail('usage: qwirq weave access <weaveQID>')
+        const { grants } = await apiFetch('GET', `/api/v1/weaves/${encodeURIComponent(weaveQID)}/grants`)
+        const audience = grants.filter((g) => g.permission !== 'own')
+        if (!audience.length) { out('(open — everyone in the company can read)'); return }
+        out('restricted to:')
+        for (const g of audience) out(`  ${g.permission.padEnd(7)} ${g.userEmail || (g.roleName ? '@' + g.roleName : '#' + g.groupName)}`)
+        return
+      }
+      if (sub === 'restrict') {
+        const weaveQID = positional[1]
+        const grantee = positional[2]
+        if (!weaveQID || !grantee) return fail('usage: qwirq weave restrict <weaveQID> <email|role|group> [--role|--group] [--manage] [--remove]')
+        const kind = flags.group ? 'group' : flags.role ? 'role' : 'user'
+        const tag = kind === 'group' ? '#' + grantee : kind === 'role' ? '@' + grantee : grantee
+        if (flags.remove) {
+          await apiFetch('DELETE', `/api/v1/weaves/${encodeURIComponent(weaveQID)}/grants?kind=${kind}&grantee=${encodeURIComponent(grantee)}`)
+          out(`Removed ${tag} from weave ${weaveQID}'s audience.`)
+        } else {
+          const permission = flags.manage ? 'manage' : 'read'
+          await apiFetch('POST', `/api/v1/weaves/${encodeURIComponent(weaveQID)}/grants`, { body: { grantee, kind, permission } })
+          out(`Restricted weave ${weaveQID} to ${tag} (${permission}). It is now visible only to its audience.`)
+        }
+        return
+      }
+      return fail('usage: qwirq weave <ls|new|access|restrict>')
     }
 
     case 'tree': {
@@ -131,6 +161,36 @@ async function main() {
         return
       }
       return fail('usage: qwirq article <get|edit|new|rm>')
+    }
+
+    case 'node': {
+      const sub = positional[0]
+      const qid = positional[1]
+      if (sub === 'access') {
+        if (!qid) return fail('usage: qwirq node access <qid>')
+        const { grants } = await apiFetch('GET', `/api/v1/nodes/${encodeURIComponent(qid)}/grants`)
+        const audience = grants.filter((g) => g.permission !== 'own')
+        if (!audience.length) { out('(open — inherits from its weave / threads)'); return }
+        out('restricted to:')
+        for (const g of audience) out(`  ${g.permission.padEnd(7)} ${g.userEmail || (g.roleName ? '@' + g.roleName : '#' + g.groupName)}`)
+        return
+      }
+      if (sub === 'restrict') {
+        const grantee = positional[2]
+        if (!qid || !grantee) return fail('usage: qwirq node restrict <qid> <email|role|group> [--role|--group] [--manage] [--remove]')
+        const kind = flags.group ? 'group' : flags.role ? 'role' : 'user'
+        const tag = kind === 'group' ? '#' + grantee : kind === 'role' ? '@' + grantee : grantee
+        if (flags.remove) {
+          await apiFetch('DELETE', `/api/v1/nodes/${encodeURIComponent(qid)}/grants?kind=${kind}&grantee=${encodeURIComponent(grantee)}`)
+          out(`Removed ${tag} from node ${qid}'s audience.`)
+        } else {
+          const permission = flags.manage ? 'manage' : 'read'
+          await apiFetch('POST', `/api/v1/nodes/${encodeURIComponent(qid)}/grants`, { body: { grantee, kind, permission } })
+          out(`Restricted node ${qid} to ${tag} (${permission}).`)
+        }
+        return
+      }
+      return fail('usage: qwirq node <access|restrict>')
     }
 
     case 'secret': {
