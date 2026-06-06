@@ -1,14 +1,15 @@
 // Thin client for @qwirq/api. Adds the bearer token and turns the JSON error envelope into
 // readable CLI errors.
-import { loadConfig } from './config.mjs'
+import { loadConfig, readToken } from './config.mjs'
 
 export async function apiFetch(method, path, { body, auth = true } = {}) {
   const cfg = loadConfig()
-  if (auth && !cfg.token) {
+  const token = auth ? readToken() : null
+  if (auth && !token) {
     throw new Error('Not signed in. Run: qwirq login')
   }
   const headers = {}
-  if (auth) headers.Authorization = `Bearer ${cfg.token}`
+  if (auth) headers.Authorization = `Bearer ${token}`
   if (body !== undefined) headers['content-type'] = 'application/json'
 
   const res = await fetch(cfg.apiBase + path, {
