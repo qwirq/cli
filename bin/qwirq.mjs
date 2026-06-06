@@ -3,7 +3,7 @@
 import { execFileSync } from 'node:child_process'
 import { apiFetch } from '../src/api.mjs'
 import { login } from '../src/login.mjs'
-import { loadConfig, clearConfig } from '../src/config.mjs'
+import { loadConfig, clearConfig, readToken } from '../src/config.mjs'
 import { parseArgs, out, fail, readStdin, promptHidden, promptYesNo, copyToClipboard, editInEditor } from '../src/util.mjs'
 
 const HELP = `qwirq — Knowledge (Texere) + Secrets from the terminal
@@ -79,8 +79,9 @@ async function main() {
       let gitHost = ''
       try { gitHost = new URL(cfg.gitBase).host } catch { /* ignore */ }
       if (kv.host && gitHost && kv.host !== gitHost) return // not our host
-      if (!cfg.token) return
-      process.stdout.write(`username=qwirq\npassword=${cfg.token}\n`)
+      const token = readToken()
+      if (!token) return
+      process.stdout.write(`username=qwirq\npassword=${token}\n`)
       return
     }
 

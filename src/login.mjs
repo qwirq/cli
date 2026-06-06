@@ -1,7 +1,7 @@
 // `qwirq login`: the OAuth 2.0 Device Authorization Grant from the client side. Ask auth for a
 // code, send the user to the browser to approve, poll until the PAT comes back, store it.
-import { loadConfig, saveConfig } from './config.mjs'
-import { out, openBrowser } from './util.mjs'
+import { loadConfig, saveConfig, writeToken } from './config.mjs'
+import { out, err, openBrowser } from './util.mjs'
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
@@ -35,9 +35,12 @@ export async function login({ noBrowser = false } = {}) {
     })
     const j = await r.json().catch(() => ({}))
     if (r.ok && j.access_token) {
-      saveConfig({ token: j.access_token, company: j.company })
+      const backend = writeToken(j.access_token)
+      saveConfig({ company: j.company })
       out('')
       out(`  Signed in to ${j.company?.name ?? 'your company'}${j.company?.role ? ` (${j.company.role})` : ''}.`)
+      if (backend) out(`  Token stored in the ${backend}.`)
+      else err('  Note: no OS keychain available — token saved to ~/.qwirq/config.json (0600).')
       return
     }
     if (j.error && j.error !== 'authorization_pending') {
