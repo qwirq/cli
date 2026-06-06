@@ -30,6 +30,45 @@ export function promptHidden(question) {
   })
 }
 
+// Yes/no confirmation for destructive actions. Prompt + answer go to stderr so stdout stays clean
+// for pipes. Returns null when stdin is not a TTY, so callers can refuse rather than hang.
+export function promptYesNo(question) {
+  if (!process.stdin.isTTY) return Promise.resolve(null)
+  return new Promise((resolve) => {
+    const rl = createInterface({ input: process.stdin, output: process.stderr })
+    rl.question(question, (answer) => {
+      rl.close()
+      const t = answer.trim().toLowerCase()
+      resolve(t === 'y' || t === 'yes')
+    })
+  })
+}
+
+// Copy text to the OS clipboard with no third-party deps (shells out like openBrowser).
+// Tries platform-native tools in order; rejects if none are available.
+const CLIPBOARD = {
+  win32: [['clip', []]],
+  darwin: [['pbcopy', []]],
+  linux: [['wl-copy', []], ['xclip', ['-selection', 'clipboard']], ['xsel', ['--clipboard', '--input']]],
+}
+export function copyToClipboard(text) {
+  const candidates = CLIPBOARD[process.platform] || CLIPBOARD.linux
+  return new Promise((resolve, reject) => {
+    let i = 0
+    const tryNext = () => {
+      if (i >= candidates.length) return reject(new Error('no clipboard tool found'))
+      const [cmd, args] = candidates[i++]
+      let child
+      try { child = spawn(cmd, args, { stdio: ['pipe', 'ignore', 'ignore'] }) } catch { return tryNext() }
+      child.on('error', tryNext)
+      child.on('exit', (code) => (code === 0 ? resolve() : tryNext()))
+      child.stdin.on('error', () => {}) // ignore EPIPE when the tool is missing
+      child.stdin.end(text)
+    }
+    tryNext()
+  })
+}
+
 // Open text in $EDITOR (fallback: notepad on Windows, vi elsewhere); return the edited content.
 export function editInEditor(initial, ext = '.md') {
   const tmp = join(tmpdir(), `qwirq-${process.pid}-${Date.now()}${ext}`)
