@@ -42,6 +42,8 @@ const HELP = `qwirq — Knowledge (Texere) + Secrets from the terminal
   qwirq group add <name> <email>    add a member to a group (admin)
   qwirq group rm <name> <email>     remove a member from a group (admin)
 
+  qwirq project ls                  list projects (repos) you can access
+  qwirq project new <slug> [--name <t>]   create a project (private repo)
   qwirq git setup                   let git authenticate to git.qwirq.com with your qwirq login
   qwirq clone <project>             clone a project repo over HTTPS (uses your login, no keys)
 
@@ -98,6 +100,25 @@ async function main() {
       execFileSync('git', ['config', '--global', `credential.${base}.username`, 'qwirq'], { stdio: 'inherit' })
       out(`git will authenticate to ${base} with your qwirq login (run 'qwirq login' first).\nClone a project with: qwirq clone <project>`)
       return
+    }
+
+    case 'project': {
+      const sub = positional[0]
+      if (sub === 'ls') {
+        const { projects } = await apiFetch('GET', '/api/v1/projects')
+        if (!projects.length) { out('(no projects)'); return }
+        for (const pr of projects) out(`${pr.slug}\t${pr.mine ? '(owner) ' : ''}${pr.name}`)
+        return
+      }
+      if (sub === 'new') {
+        const slug = positional[1]
+        if (!slug) return fail('usage: qwirq project new <slug> [--name <text>]')
+        const body = { slug, name: typeof flags.name === 'string' ? flags.name : slug }
+        const r = await apiFetch('POST', '/api/v1/projects', { body })
+        out(`Created project ${r.project.slug}. Clone it with: qwirq clone ${r.project.slug}`)
+        return
+      }
+      return fail('usage: qwirq project <ls|new>')
     }
 
     case 'clone': {
