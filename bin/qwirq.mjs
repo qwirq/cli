@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // qwirq — the QWIRQ command line. Work with Knowledge (Texere) and Secrets from the terminal.
+import { execFileSync } from 'node:child_process'
 import { apiFetch } from '../src/api.mjs'
 import { login } from '../src/login.mjs'
 import { loadConfig, clearConfig } from '../src/config.mjs'
@@ -39,7 +40,10 @@ const HELP = `qwirq — Knowledge (Texere) + Secrets from the terminal
   qwirq group add <name> <email>    add a member to a group (admin)
   qwirq group rm <name> <email>     remove a member from a group (admin)
 
-Endpoints come from ~/.qwirq/config.json (override: QWIRQ_API_URL, QWIRQ_AUTH_URL).`
+  qwirq git setup                   let git authenticate to git.qwirq.com with your qwirq login
+  qwirq clone <project>             clone a project repo over HTTPS (uses your login, no keys)
+
+Endpoints come from ~/.qwirq/config.json (override: QWIRQ_API_URL, QWIRQ_AUTH_URL, QWIRQ_GIT_URL).`
 
 function indentTree(nodes, depth, lines) {
   for (const n of nodes || []) {
@@ -60,6 +64,49 @@ async function main() {
     case 'login': return login({ noBrowser: !!flags['no-browser'] })
 
     case 'logout': { clearConfig(); out('Signed out.'); return }
+
+    case 'credential-helper': {
+      // git credential helper: on `get`, hand git our stored PAT for the qwirq git host.
+      // store/erase are no-ops (the token is managed by `qwirq login`). Writes ONLY the
+      // credential lines to stdout so it satisfies git's credential protocol.
+      if (positional[0] !== 'get') return
+      const input = await readStdin().catch(() => '')
+      const kv = {}
+      for (const line of input.split('\n')) { const i = line.indexOf('='); if (i > 0) kv[line.slice(0, i)] = line.slice(i + 1).trim() }
+      const cfg = loadConfig()
+      let gitHost = ''
+      try { gitHost = new URL(cfg.gitBase).host } catch { /* ignore */ }
+      if (kv.host && gitHost && kv.host !== gitHost) return // not our host
+      if (!cfg.token) return
+      process.stdout.write(`username=qwirq\npassword=${cfg.token}\n`)
+      return
+    }
+
+    case 'git': {
+      if (positional[0] !== 'setup') return fail('usage: qwirq git setup')
+      const base = loadConfig().gitBase.replace(/\/+$/, '')
+      const key = `credential.${base}.helper`
+      // Reset any inherited helper (e.g. Git Credential Manager) for THIS host, then add ours.
+      // The empty value clears helpers accumulated from broader scopes, so a system/global
+      // helper can't pop an interactive prompt for git.qwirq.com; only our PAT helper runs.
+      try { execFileSync('git', ['config', '--global', '--unset-all', key], { stdio: 'ignore' }) } catch { /* none set */ }
+      execFileSync('git', ['config', '--global', '--add', key, ''], { stdio: 'inherit' })
+      execFileSync('git', ['config', '--global', '--add', key, '!qwirq credential-helper'], { stdio: 'inherit' })
+      execFileSync('git', ['config', '--global', `credential.${base}.username`, 'qwirq'], { stdio: 'inherit' })
+      out(`git will authenticate to ${base} with your qwirq login (run 'qwirq login' first).\nClone a project with: qwirq clone <project>`)
+      return
+    }
+
+    case 'clone': {
+      const name = positional[0]
+      if (!name) return fail('usage: qwirq clone <project>')
+      const me = await apiFetch('GET', '/api/v1/whoami')
+      const base = loadConfig().gitBase.replace(/\/+$/, '')
+      const url = `${base}/${me.company.qid}/${name}.git`
+      out(`Cloning ${url}`)
+      execFileSync('git', ['clone', url, ...positional.slice(1)], { stdio: 'inherit' })
+      return
+    }
 
     case 'whoami': {
       const me = await apiFetch('GET', '/api/v1/whoami')
