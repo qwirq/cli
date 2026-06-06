@@ -25,9 +25,10 @@ const HELP = `qwirq — Knowledge (Texere) + Secrets from the terminal
   qwirq node access <qid>           show a document/thread's audience (open, or who it's restricted to)
   qwirq node restrict <qid> <email|role|group> [--role|--group] [--manage] [--remove]
 
-  qwirq secret ls [--mine|--company]   list secrets (scope + owner)
+  qwirq secret ls [query] [--mine|--company]   list/search secrets (name · key · description)
+  qwirq secret show <name>          view a secret object (name, key, description; value stays hidden)
   qwirq secret reveal <name>        print a secret value (audited)
-  qwirq secret set <name> [--stdin] set a secret (hidden prompt, or value from stdin)
+  qwirq secret set <name> [--stdin] [--key <k>] [--desc <text>]   set value and/or metadata
   qwirq secret rm <name>            delete a secret
   qwirq secret share <name> <email|role|group> [--role|--group] [--read|--manage|--own]
   qwirq secret unshare <name> <email|role|group> [--role|--group]
@@ -243,13 +244,30 @@ async function main() {
     case 'secret': {
       const sub = positional[0]
       const name = positional[1]
-      if (sub === 'ls') {
+      if (sub === 'ls' || sub === 'search') {
         const { secrets } = await apiFetch('GET', '/api/v1/secrets')
         let list = secrets
         if (flags.mine) list = list.filter((s) => s.scope === 'user')
         if (flags.company) list = list.filter((s) => s.scope === 'company')
-        if (!list.length) { out('(no secrets)'); return }
-        for (const s of list) out(s.scope === 'company' ? `${s.name}  [company · ${s.owner}]` : s.name)
+        const q = (positional[1] || '').toLowerCase()
+        if (q) list = list.filter((s) => [s.name, s.key, s.description].some((f) => (f || '').toLowerCase().includes(q)))
+        if (!list.length) { out(q ? `(no secrets match "${positional[1]}")` : '(no secrets)'); return }
+        for (const s of list) {
+          const tags = [s.key ? `key:${s.key}` : null, s.scope === 'company' ? `company · ${s.owner}` : null].filter(Boolean)
+          const meta = tags.length ? `  [${tags.join(' · ')}]` : ''
+          const desc = s.description ? `  — ${s.description}` : ''
+          out(`${s.name}${meta}${desc}`)
+        }
+        return
+      }
+      if (sub === 'show') {
+        if (!name) return fail('usage: qwirq secret show <name>')
+        const { secret: s } = await apiFetch('GET', `/api/v1/secrets/${encodeURIComponent(name)}`)
+        out(s.name)
+        if (s.description) out(`  ${s.description}`)
+        out(`  key:     ${s.key || '(none)'}`)
+        out(`  scope:   ${s.scope}${s.scope === 'company' ? ` (owner ${s.owner})` : ''}`)
+        out(`  value:   (hidden — run: qwirq secret reveal ${s.name})`)
         return
       }
       if (sub === 'reveal') {
@@ -261,11 +279,26 @@ async function main() {
         return
       }
       if (sub === 'set') {
-        if (!name) return fail('usage: qwirq secret set <name> [--stdin]')
-        let value = flags.stdin ? (await readStdin()).replace(/\r?\n$/, '') : await promptHidden(`Value for ${name}: `)
-        if (!value) return fail('value is required')
-        await apiFetch('PUT', `/api/v1/secrets/${encodeURIComponent(name)}`, { body: { value } })
-        out(`Set ${name}.`)
+        if (!name) return fail('usage: qwirq secret set <name> [--stdin] [--key <k>] [--desc <text>]')
+        const hasKey = flags.key !== undefined
+        const hasDesc = flags.desc !== undefined || flags.description !== undefined
+        const body = {}
+        if (flags.stdin) {
+          body.value = (await readStdin()).replace(/\r?\n$/, '')
+        } else if (!hasKey && !hasDesc) {
+          const v = await promptHidden(`Value for ${name}: `)
+          if (!v) return fail('value is required')
+          body.value = v
+        }
+        if (hasKey) body.key = String(flags.key)
+        if (hasDesc) body.description = String(flags.desc ?? flags.description)
+        const parts = []
+        if (body.value !== undefined) parts.push('value')
+        if (hasKey) parts.push('key')
+        if (hasDesc) parts.push('description')
+        if (!parts.length) return fail('nothing to set')
+        await apiFetch('PUT', `/api/v1/secrets/${encodeURIComponent(name)}`, { body })
+        out(`Set ${name} (${parts.join(', ')}).`)
         return
       }
       if (sub === 'rm') {
@@ -300,7 +333,7 @@ async function main() {
         for (const g of grants) out(`${g.permission.padEnd(7)} ${g.userEmail || (g.roleName ? '@' + g.roleName : '#' + g.groupName)}`)
         return
       }
-      return fail('usage: qwirq secret <ls|reveal|set|rm|share|unshare|grants>')
+      return fail('usage: qwirq secret <ls|search|show|reveal|set|rm|share|unshare|grants>')
     }
 
     case 'members': {
