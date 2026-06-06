@@ -26,9 +26,9 @@ const HELP = `qwirq — Knowledge (Texere) + Secrets from the terminal
   qwirq node restrict <qid> <email|role|group> [--role|--group] [--manage] [--remove]
 
   qwirq secret ls [query] [--mine|--company]   list/search secrets (name · key · description)
-  qwirq secret show <name>          view a secret object (name, key, description; value stays hidden)
+  qwirq secret show <name>          view a secret object (label, logical key, description; value hidden)
   qwirq secret reveal <name>        print a secret value (audited)
-  qwirq secret set <name> [--stdin] [--key <k>] [--desc <text>]   set value and/or metadata
+  qwirq secret set <name> [--stdin] [--label <t>] [--key <k>] [--desc <text>]   set value and/or metadata
   qwirq secret rm <name>            delete a secret
   qwirq secret share <name> <email|role|group> [--role|--group] [--read|--manage|--own]
   qwirq secret unshare <name> <email|role|group> [--role|--group]
@@ -250,24 +250,26 @@ async function main() {
         if (flags.mine) list = list.filter((s) => s.scope === 'user')
         if (flags.company) list = list.filter((s) => s.scope === 'company')
         const q = (positional[1] || '').toLowerCase()
-        if (q) list = list.filter((s) => [s.name, s.key, s.description].some((f) => (f || '').toLowerCase().includes(q)))
+        if (q) list = list.filter((s) => [s.label, s.name, s.key, s.description].some((f) => (f || '').toLowerCase().includes(q)))
         if (!list.length) { out(q ? `(no secrets match "${positional[1]}")` : '(no secrets)'); return }
         for (const s of list) {
-          const tags = [s.key ? `key:${s.key}` : null, s.scope === 'company' ? `company · ${s.owner}` : null].filter(Boolean)
-          const meta = tags.length ? `  [${tags.join(' · ')}]` : ''
+          const title = s.label || s.name
+          const sub = [s.label ? s.name : null, s.key ? `key:${s.key}` : null, s.scope === 'company' ? `company · ${s.owner}` : null].filter(Boolean)
+          const meta = sub.length ? `  [${sub.join(' · ')}]` : ''
           const desc = s.description ? `  — ${s.description}` : ''
-          out(`${s.name}${meta}${desc}`)
+          out(`${title}${meta}${desc}`)
         }
         return
       }
       if (sub === 'show') {
         if (!name) return fail('usage: qwirq secret show <name>')
         const { secret: s } = await apiFetch('GET', `/api/v1/secrets/${encodeURIComponent(name)}`)
-        out(s.name)
+        out(s.label || s.name)
         if (s.description) out(`  ${s.description}`)
-        out(`  key:     ${s.key || '(none)'}`)
-        out(`  scope:   ${s.scope}${s.scope === 'company' ? ` (owner ${s.owner})` : ''}`)
-        out(`  value:   (hidden — run: qwirq secret reveal ${s.name})`)
+        if (s.label) out(`  logical key: ${s.name}`)
+        out(`  key:         ${s.key || '(none)'}`)
+        out(`  scope:       ${s.scope}${s.scope === 'company' ? ` (owner ${s.owner})` : ''}`)
+        out(`  value:       (hidden — run: qwirq secret reveal ${s.name})`)
         return
       }
       if (sub === 'reveal') {
@@ -279,21 +281,25 @@ async function main() {
         return
       }
       if (sub === 'set') {
-        if (!name) return fail('usage: qwirq secret set <name> [--stdin] [--key <k>] [--desc <text>]')
+        if (!name) return fail('usage: qwirq secret set <name> [--stdin] [--label <text>] [--key <k>] [--desc <text>]')
+        const hasLabel = flags.label !== undefined
         const hasKey = flags.key !== undefined
         const hasDesc = flags.desc !== undefined || flags.description !== undefined
+        const hasMeta = hasLabel || hasKey || hasDesc
         const body = {}
         if (flags.stdin) {
           body.value = (await readStdin()).replace(/\r?\n$/, '')
-        } else if (!hasKey && !hasDesc) {
+        } else if (!hasMeta) {
           const v = await promptHidden(`Value for ${name}: `)
           if (!v) return fail('value is required')
           body.value = v
         }
+        if (hasLabel) body.label = String(flags.label)
         if (hasKey) body.key = String(flags.key)
         if (hasDesc) body.description = String(flags.desc ?? flags.description)
         const parts = []
         if (body.value !== undefined) parts.push('value')
+        if (hasLabel) parts.push('name')
         if (hasKey) parts.push('key')
         if (hasDesc) parts.push('description')
         if (!parts.length) return fail('nothing to set')
