@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process'
 import { apiFetch } from '../src/api.mjs'
 import { login } from '../src/login.mjs'
 import { loadConfig, clearConfig } from '../src/config.mjs'
-import { parseArgs, out, fail, readStdin, promptHidden, editInEditor } from '../src/util.mjs'
+import { parseArgs, out, fail, readStdin, promptHidden, promptYesNo, copyToClipboard, editInEditor } from '../src/util.mjs'
 
 const HELP = `qwirq — Knowledge (Texere) + Secrets from the terminal
 
@@ -28,8 +28,9 @@ const HELP = `qwirq — Knowledge (Texere) + Secrets from the terminal
   qwirq secret ls [query] [--mine|--company]   list/search secrets (name · key · description)
   qwirq secret show <name>          view a secret object (label, logical key, description; value hidden)
   qwirq secret reveal <name>        print a secret value (audited)
+  qwirq secret copy <name>          copy a secret value to the clipboard (audited; no terminal echo)
   qwirq secret set <name> [--stdin] [--label <t>] [--key <k>] [--desc <text>]   set value and/or metadata
-  qwirq secret rm <name>            delete a secret
+  qwirq secret rm <name> [--yes]    delete a secret (asks to confirm)
   qwirq secret share <name> <email|role|group> [--role|--group] [--read|--manage|--own]
   qwirq secret unshare <name> <email|role|group> [--role|--group]
   qwirq secret grants <name>        show who a secret is shared with
@@ -254,8 +255,8 @@ async function main() {
         if (!list.length) { out(q ? `(no secrets match "${positional[1]}")` : '(no secrets)'); return }
         for (const s of list) {
           const title = s.label || s.name
-          const sub = [s.label ? s.name : null, s.key ? `key:${s.key}` : null, s.scope === 'company' ? `company · ${s.owner}` : null].filter(Boolean)
-          const meta = sub.length ? `  [${sub.join(' · ')}]` : ''
+          const bits = [s.label ? s.name : null, s.key ? `key:${s.key}` : null, s.scope === 'company' ? `company · ${s.owner}` : null].filter(Boolean)
+          const meta = bits.length ? `  [${bits.join(' · ')}]` : ''
           const desc = s.description ? `  — ${s.description}` : ''
           out(`${title}${meta}${desc}`)
         }
@@ -277,7 +278,17 @@ async function main() {
         const r = await apiFetch('POST', `/api/v1/secrets/${encodeURIComponent(name)}/reveal`)
         out(r.value) // value to stdout (clean for pipes)
         // handling guidance to stderr, so it never contaminates a pipe
-        process.stderr.write('Sensitive: do not save to disk, logs, or shell history.\n')
+        process.stderr.write('Sensitive: do not save to disk, logs, or shell history. (tip: qwirq secret copy)\n')
+        return
+      }
+      if (sub === 'copy') {
+        if (!name) return fail('usage: qwirq secret copy <name>')
+        // Reuse the audited reveal path, then put the value straight on the clipboard so it
+        // never lands in the terminal scrollback. Mirrors the web list's one-click copy.
+        const r = await apiFetch('POST', `/api/v1/secrets/${encodeURIComponent(name)}/reveal`)
+        try { await copyToClipboard(r.value) }
+        catch (e) { return fail(`could not copy to clipboard (${e.message}); use: qwirq secret reveal ${name}`) }
+        out(`Copied ${name} to the clipboard.`)
         return
       }
       if (sub === 'set') {
@@ -308,7 +319,12 @@ async function main() {
         return
       }
       if (sub === 'rm') {
-        if (!name) return fail('usage: qwirq secret rm <name>')
+        if (!name) return fail('usage: qwirq secret rm <name> [--yes]')
+        if (!flags.yes) {
+          const ok = await promptYesNo(`Delete secret "${name}"? This cannot be undone. [y/N] `)
+          if (ok === null) return fail('refusing to delete in a non-interactive shell without --yes')
+          if (!ok) { out('Cancelled.'); return }
+        }
         await apiFetch('DELETE', `/api/v1/secrets/${encodeURIComponent(name)}`)
         out(`Deleted ${name}.`)
         return
@@ -339,7 +355,7 @@ async function main() {
         for (const g of grants) out(`${g.permission.padEnd(7)} ${g.userEmail || (g.roleName ? '@' + g.roleName : '#' + g.groupName)}`)
         return
       }
-      return fail('usage: qwirq secret <ls|search|show|reveal|set|rm|share|unshare|grants>')
+      return fail('usage: qwirq secret <ls|search|show|reveal|copy|set|rm|share|unshare|grants>')
     }
 
     case 'members': {
