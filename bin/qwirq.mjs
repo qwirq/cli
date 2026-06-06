@@ -44,6 +44,11 @@ const HELP = `qwirq — Knowledge (Texere) + Secrets from the terminal
 
   qwirq project ls                  list projects (repos) you can access
   qwirq project new <slug> [--name <t>]   create a project (private repo)
+  qwirq project rename <slug> [--slug <new>] [--name <t>]   rename a project
+  qwirq project rm <slug> [--yes]   delete a project (asks to confirm)
+  qwirq project share <slug> <email|role|group> [--role|--group] [--read|--manage|--own]
+  qwirq project unshare <slug> <email|role|group> [--role|--group]
+  qwirq project grants <slug>       show who a project is shared with
   qwirq git setup                   let git authenticate to git.qwirq.com with your qwirq login
   qwirq clone <project>             clone a project repo over HTTPS (uses your login, no keys)
 
@@ -104,6 +109,7 @@ async function main() {
 
     case 'project': {
       const sub = positional[0]
+      const slug = positional[1]
       if (sub === 'ls') {
         const { projects } = await apiFetch('GET', '/api/v1/projects')
         if (!projects.length) { out('(no projects)'); return }
@@ -111,14 +117,60 @@ async function main() {
         return
       }
       if (sub === 'new') {
-        const slug = positional[1]
         if (!slug) return fail('usage: qwirq project new <slug> [--name <text>]')
         const body = { slug, name: typeof flags.name === 'string' ? flags.name : slug }
         const r = await apiFetch('POST', '/api/v1/projects', { body })
         out(`Created project ${r.project.slug}. Clone it with: qwirq clone ${r.project.slug}`)
         return
       }
-      return fail('usage: qwirq project <ls|new>')
+      if (sub === 'rename') {
+        if (!slug) return fail('usage: qwirq project rename <slug> [--slug <new>] [--name <text>]')
+        const body = {}
+        if (typeof flags.slug === 'string') body.slug = flags.slug
+        if (typeof flags.name === 'string') body.name = flags.name
+        if (!body.slug && !body.name) return fail('nothing to change (use --slug and/or --name)')
+        const r = await apiFetch('PATCH', `/api/v1/projects/${encodeURIComponent(slug)}`, { body })
+        out(`Renamed ${slug}${body.slug ? ` → ${r.slug}` : ''}.`)
+        return
+      }
+      if (sub === 'rm') {
+        if (!slug) return fail('usage: qwirq project rm <slug> [--yes]')
+        if (!flags.yes) {
+          const ok = await promptYesNo(`Delete project "${slug}"? This deletes the repo and its history and cannot be undone. [y/N] `)
+          if (ok === null) return fail('refusing to delete in a non-interactive shell without --yes')
+          if (!ok) { out('Cancelled.'); return }
+        }
+        await apiFetch('DELETE', `/api/v1/projects/${encodeURIComponent(slug)}`)
+        out(`Deleted ${slug}.`)
+        return
+      }
+      if (sub === 'share') {
+        const grantee = positional[2]
+        if (!slug || !grantee) return fail('usage: qwirq project share <slug> <email|role|group> [--role|--group] [--read|--manage|--own]')
+        const kind = flags.group ? 'group' : flags.role ? 'role' : 'user'
+        const permission = flags.own ? 'own' : flags.manage ? 'manage' : 'read'
+        await apiFetch('POST', `/api/v1/projects/${encodeURIComponent(slug)}/grants`, { body: { grantee, kind, permission } })
+        const tag = kind === 'group' ? '#' + grantee : kind === 'role' ? '@' + grantee : grantee
+        out(`Shared ${slug} with ${tag} (${permission}).`)
+        return
+      }
+      if (sub === 'unshare') {
+        const grantee = positional[2]
+        if (!slug || !grantee) return fail('usage: qwirq project unshare <slug> <email|role|group> [--role|--group]')
+        const kind = flags.group ? 'group' : flags.role ? 'role' : 'user'
+        await apiFetch('DELETE', `/api/v1/projects/${encodeURIComponent(slug)}/grants?kind=${kind}&grantee=${encodeURIComponent(grantee)}`)
+        const tag = kind === 'group' ? '#' + grantee : kind === 'role' ? '@' + grantee : grantee
+        out(`Unshared ${slug} from ${tag}.`)
+        return
+      }
+      if (sub === 'grants') {
+        if (!slug) return fail('usage: qwirq project grants <slug>')
+        const { grants } = await apiFetch('GET', `/api/v1/projects/${encodeURIComponent(slug)}/grants`)
+        if (!grants.length) { out('(private — not shared)'); return }
+        for (const g of grants) out(`${g.permission.padEnd(7)} ${g.userEmail || (g.roleName ? '@' + g.roleName : '#' + g.groupName)}`)
+        return
+      }
+      return fail('usage: qwirq project <ls|new|rename|rm|share|unshare|grants>')
     }
 
     case 'clone': {
