@@ -5,7 +5,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { mkdirSync, readFileSync, writeFileSync, rmSync, existsSync } from 'node:fs'
 
-const DEFAULTS = { authBase: 'http://localhost:4000', apiBase: 'http://localhost:5000' }
+const DEFAULTS = { authBase: 'http://localhost:4000', apiBase: 'http://localhost:5000', gitBase: 'https://git.qwirq.com' }
 
 function dir() {
   return process.env.QWIRQ_HOME || join(homedir(), '.qwirq')
@@ -23,6 +23,7 @@ export function loadConfig() {
   return {
     authBase: process.env.QWIRQ_AUTH_URL || f.authBase || DEFAULTS.authBase,
     apiBase: process.env.QWIRQ_API_URL || f.apiBase || DEFAULTS.apiBase,
+    gitBase: process.env.QWIRQ_GIT_URL || f.gitBase || DEFAULTS.gitBase,
     token: process.env.QWIRQ_TOKEN || f.token || null,
     company: f.company || null,
   }
