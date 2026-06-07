@@ -52,6 +52,11 @@ const HELP = `qwirq — Knowledge (Texere) + Secrets from the terminal
   qwirq git setup                   let git authenticate to git.qwirq.com with your qwirq login
   qwirq clone <project>             clone a project repo over HTTPS (uses your login, no keys)
 
+  qwirq data status                 is there an app database for your company yet?
+  qwirq data provision              create your company's isolated app database
+  qwirq data tables [--env <e>]     list tables in your app database (default env: prod)
+  qwirq data query "<sql>" [--env]  run SQL against your app database
+
 Endpoints come from ~/.qwirq/config.json (override: QWIRQ_API_URL, QWIRQ_AUTH_URL, QWIRQ_GIT_URL).`
 
 function indentTree(nodes, depth, lines) {
@@ -171,6 +176,46 @@ async function main() {
         return
       }
       return fail('usage: qwirq project <ls|new|rename|rm|share|unshare|grants>')
+    }
+
+    case 'data': {
+      const sub = positional[0]
+      const fmt = (v) => (v === null || v === undefined ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v))
+      if (sub === 'status') {
+        const s = await apiFetch('GET', '/api/v1/data')
+        if (!s.provisioned) { out('No app database yet. Create one with: qwirq data provision'); return }
+        out(`app database: ready (region ${s.region}) · environments: ${s.envs.join(', ')}`)
+        return
+      }
+      if (sub === 'provision') {
+        const r = await apiFetch('POST', '/api/v1/data/provision')
+        out(r.already
+          ? `App database already exists (region ${r.region}).`
+          : `Provisioned your app database (region ${r.region}). Try: qwirq data query "select 1 as hello"`)
+        return
+      }
+      if (sub === 'tables') {
+        const env = typeof flags.env === 'string' ? flags.env : 'prod'
+        const { tables } = await apiFetch('GET', `/api/v1/data/tables?env=${encodeURIComponent(env)}`)
+        if (!tables.length) { out(`(no tables in ${env})`); return }
+        for (const t of tables) out(t)
+        return
+      }
+      if (sub === 'query') {
+        const sql = positional.slice(1).join(' ').trim()
+        if (!sql) return fail('usage: qwirq data query "<sql>" [--env <env>]')
+        const env = typeof flags.env === 'string' ? flags.env : 'prod'
+        const r = await apiFetch('POST', '/api/v1/data/query', { body: { sql, env } })
+        if (r.columns && r.columns.length) {
+          out(r.columns.join('\t'))
+          for (const row of r.rows) out(r.columns.map((c) => fmt(row[c])).join('\t'))
+          out(`(${r.rowCount} row${r.rowCount === 1 ? '' : 's'})`)
+        } else {
+          out('OK')
+        }
+        return
+      }
+      return fail('usage: qwirq data <status|provision|tables|query>')
     }
 
     case 'clone': {
