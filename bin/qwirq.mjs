@@ -20,6 +20,7 @@ const HELP = `qwirq — Knowledge (Texere) + Secrets from the terminal
   qwirq weave restrict <weaveQID> <email|role|group> [--role|--group] [--manage] [--remove]
   qwirq tree <weaveQID>             show a weave's thread/article tree
 
+  qwirq thread new --weave <id> --title <t>   create a thread (section) in a weave
   qwirq article get <qid>           print an article's markdown
   qwirq article edit <qid>          edit an article body in $EDITOR
   qwirq article new --weave <id> --title <t> [--thread <id>] [--file <f> | --stdin]
@@ -312,6 +313,22 @@ async function main() {
       indentTree(tree, 0, lines)
       out(lines.length ? lines.join('\n') : '(empty)')
       return
+    }
+
+    case 'thread': {
+      const sub = positional[0]
+      if (sub === 'new') {
+        const weaveQID = flags.weave
+        const title = typeof flags.title === 'string' ? flags.title : ''
+        if (!weaveQID || !title) return fail('usage: qwirq thread new --weave <id> --title <t>')
+        // A thread is a node at the weave root (no parent); same create endpoint as articles.
+        const created = await apiFetch('POST', `/api/v1/weaves/${encodeURIComponent(weaveQID)}/nodes`, {
+          body: { kind: 'thread', title },
+        })
+        out(`created thread ${created.nodeQID}  ${title}`)
+        return
+      }
+      return fail('usage: qwirq thread new --weave <id> --title <t>')
     }
 
     case 'article': {
