@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // qwirq — the QWIRQ command line. Work with Knowledge (Texere) and Secrets from the terminal.
 import { execFileSync } from 'node:child_process'
+import { readdirSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { apiFetch } from '../src/api.mjs'
 import { login } from '../src/login.mjs'
 import { loadConfig, clearConfig, readToken } from '../src/config.mjs'
@@ -56,6 +58,8 @@ const HELP = `qwirq — Knowledge (Texere) + Secrets from the terminal
   qwirq data provision              create your company's isolated app database
   qwirq data tables [--env <e>]     list tables in your app database (default env: prod)
   qwirq data query "<sql>" [--env]  run SQL against your app database
+  qwirq data migrate [--dir <d>] [--env]   apply *.sql migrations (default dir: migrations)
+  qwirq data migrations [--env]     list applied migrations
 
 Endpoints come from ~/.qwirq/config.json (override: QWIRQ_API_URL, QWIRQ_AUTH_URL, QWIRQ_GIT_URL).`
 
@@ -215,7 +219,28 @@ async function main() {
         }
         return
       }
-      return fail('usage: qwirq data <status|provision|tables|query>')
+      if (sub === 'migrate') {
+        const env = typeof flags.env === 'string' ? flags.env : 'prod'
+        const dir = typeof flags.dir === 'string' ? flags.dir : 'migrations'
+        // Each *.sql file (sorted by name) is one migration: id = filename, up = its SQL.
+        let files
+        try { files = readdirSync(dir).filter((f) => f.endsWith('.sql')).sort() }
+        catch { return fail(`no migrations directory: ${dir} (use --dir <path>)`) }
+        if (!files.length) return fail(`no .sql files in ${dir}`)
+        const migrations = files.map((f) => ({ id: f.replace(/\.sql$/, ''), up: readFileSync(join(dir, f), 'utf8') }))
+        const r = await apiFetch('POST', '/api/v1/data/migrate', { body: { env, migrations } })
+        out(r.applied.length ? `applied (${env}): ${r.applied.join(', ')}` : `nothing to apply (${env})`)
+        if (r.skipped.length) out(`already applied: ${r.skipped.length}`)
+        return
+      }
+      if (sub === 'migrations') {
+        const env = typeof flags.env === 'string' ? flags.env : 'prod'
+        const { applied } = await apiFetch('GET', `/api/v1/data/migrate?env=${encodeURIComponent(env)}`)
+        if (!applied.length) { out(`(no migrations applied in ${env})`); return }
+        for (const id of applied) out(id)
+        return
+      }
+      return fail('usage: qwirq data <status|provision|tables|query|migrate|migrations>')
     }
 
     case 'clone': {
