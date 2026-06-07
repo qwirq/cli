@@ -16,6 +16,7 @@ const HELP = `qwirq — Knowledge (Texere) + Secrets from the terminal
 
   qwirq weave ls                    list weaves (🔒 = restricted)
   qwirq weave new <name>            create a weave
+  qwirq weave rm <weaveQID> [--yes] delete a weave and everything in it (asks to confirm)
   qwirq weave access <weaveQID>     show a weave's audience (open, or who it's restricted to)
   qwirq weave restrict <weaveQID> <email|role|group> [--role|--group] [--manage] [--remove]
   qwirq tree <weaveQID>             show a weave's thread/article tree
@@ -276,6 +277,18 @@ async function main() {
         out(`created weave ${r.weaveQID}  ${r.name}`)
         return
       }
+      if (sub === 'rm') {
+        const weaveQID = positional[1]
+        if (!weaveQID) return fail('usage: qwirq weave rm <weaveQID> [--yes]')
+        if (!flags.yes) {
+          const okGo = await promptYesNo(`Delete weave ${weaveQID} and everything in it? This cannot be undone. [y/N] `)
+          if (okGo === null) return fail('refusing to delete in a non-interactive shell without --yes')
+          if (!okGo) { out('Cancelled.'); return }
+        }
+        await apiFetch('DELETE', `/api/v1/weaves/${encodeURIComponent(weaveQID)}`)
+        out(`Deleted weave ${weaveQID}.`)
+        return
+      }
       if (sub === 'access') {
         const weaveQID = positional[1]
         if (!weaveQID) return fail('usage: qwirq weave access <weaveQID>')
@@ -302,7 +315,7 @@ async function main() {
         }
         return
       }
-      return fail('usage: qwirq weave <ls|new|access|restrict>')
+      return fail('usage: qwirq weave <ls|new|rm|access|restrict>')
     }
 
     case 'tree': {
