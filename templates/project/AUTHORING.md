@@ -18,6 +18,26 @@ bound. `scripts/dev.ts` ensures the primitive tables (`migrateTasks`/`migrateCmd
 exercises the libs; `src/server/store.ts` is the seam (`appDb()` → a bridge; `ensureSchema()` → the
 tables).
 
+## TypeScript: the typed bridge
+
+The `@qwirq/tasks` and `@qwirq/cmdb` APIs are already fully typed. For raw bridge access to YOUR tables,
+run `qwirq types` (or `npm run types`): it introspects the app DB and writes `.qwirq/schema.d.ts`. Then:
+
+```ts
+import { createBridge } from '@qwirq/bridge'
+import type { QwirqDB } from '../.qwirq/schema'
+const b = createBridge<QwirqDB>(process.env.QWIRQ_DB_URL!)
+await b('your_table').where({ some_column: 'x' }).all()   // columns autocomplete; typos are compile errors
+```
+
+Regenerate after any schema change. `.qwirq/` is gitignored (it is generated).
+
+## VS Code
+
+Install the **QWIRQ** extension (`apps/vscode`, `qwirq-vscode-*.vsix`) for `qwirq.yaml` validation, the
+CLI in the Command Palette ("QWIRQ:"), `Generate Schema Types`, and snippets. Set `qwirq.cliCommand` if
+`qwirq` is not on your PATH.
+
 ## Shipping
 
 `qwirq.yaml` + `src/app` build into a Module-Federation remote and deploy into your instance on `git
