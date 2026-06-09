@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 // qwirq — the QWIRQ command line. Work with Knowledge (Texere) and Secrets from the terminal.
-import { execFileSync } from 'node:child_process'
-import { readdirSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { readdirSync, readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
+import { join, resolve, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { apiFetch } from '../src/api.mjs'
 import { login } from '../src/login.mjs'
 import { loadConfig, clearConfig, readToken } from '../src/config.mjs'
 import { parseArgs, out, fail, readStdin, promptHidden, promptYesNo, copyToClipboard, editInEditor } from '../src/util.mjs'
+
+const here = dirname(fileURLToPath(import.meta.url))
 
 const HELP = `qwirq — Knowledge (Texere) + Secrets from the terminal
 
@@ -45,6 +48,9 @@ const HELP = `qwirq — Knowledge (Texere) + Secrets from the terminal
   qwirq group members <name>        list a group's members
   qwirq group add <name> <email>    add a member to a group (admin)
   qwirq group rm <name> <email>     remove a member from a group (admin)
+
+  qwirq init <name>                 scaffold a QWIRQ app (qwirq.yaml + React UI + @qwirq/tasks/cmdb)
+  qwirq dev [--db <secret>]         run the project locally with a dev app DB bound (QWIRQ_DB_URL)
 
   qwirq project ls                  list projects (repos) you can access
   qwirq project new <slug> [--name <t>]   create a project (private repo)
@@ -254,6 +260,56 @@ async function main() {
       out(`Cloning ${url}`)
       execFileSync('git', ['clone', url, ...positional.slice(1)], { stdio: 'inherit' })
       return
+    }
+
+    case 'init': {
+      // Scaffold a buildable QWIRQ Project: a qwirq.yaml manifest + a React UI (provides.app) + server-side
+      // logic on the published primitives (@qwirq/tasks + @qwirq/cmdb), plus a local dev loop. Copies
+      // templates/project/, replacing __NAME__ and renaming dotfiles. DX-1 (the authoring entrypoint).
+      const name = positional[0]
+      if (!name) return fail('usage: qwirq init <name>')
+      if (!/^[a-z][a-z0-9-]*$/.test(name)) return fail('name must be kebab-case (a-z, 0-9, -) starting with a letter')
+      const dest = resolve(process.cwd(), name)
+      if (existsSync(dest)) return fail(`${name}/ already exists`)
+      const tplRoot = join(here, '..', 'templates', 'project')
+      const RENAME = { _npmrc: '.npmrc', _gitignore: '.gitignore' }
+      const walk = (srcDir, dstDir) => {
+        mkdirSync(dstDir, { recursive: true })
+        for (const e of readdirSync(srcDir, { withFileTypes: true })) {
+          const src = join(srcDir, e.name)
+          const dst = join(dstDir, RENAME[e.name] ?? e.name)
+          if (e.isDirectory()) walk(src, dst)
+          else writeFileSync(dst, readFileSync(src, 'utf8').split('__NAME__').join(name))
+        }
+      }
+      walk(tplRoot, dest)
+      out(`Scaffolded ${name}/  (qwirq.yaml + a React app + @qwirq/tasks/@qwirq/cmdb on the app DB)`)
+      out('next:')
+      out(`  cd ${name}`)
+      out('  npm install        # pulls @qwirq/* (needs a read:packages token in your .npmrc)')
+      out('  qwirq dev          # binds a dev app DB and runs it')
+      return
+    }
+
+    case 'dev': {
+      // Run the project's dev script with the dev app-DB connection bound as QWIRQ_DB_URL, so server-side
+      // code using @qwirq/tasks/@qwirq/cmdb runs locally. DX-1 (the local authoring loop).
+      let url = process.env.QWIRQ_DB_URL
+      if (!url) {
+        let secret = typeof flags.db === 'string' ? flags.db : null
+        if (!secret) {
+          let id
+          try { id = (readFileSync('qwirq.yaml', 'utf8').match(/^id:\s*(\S+)/m) || [])[1] } catch { /* no manifest */ }
+          if (!id) return fail('run this in a project dir (with qwirq.yaml), or set QWIRQ_DB_URL, or pass --db <secret>')
+          secret = `${id}_dev_db_url`
+        }
+        try { url = (await apiFetch('POST', `/api/v1/secrets/${encodeURIComponent(secret)}/reveal`)).value }
+        catch { return fail(`no dev DB: secret "${secret}" not found. Set QWIRQ_DB_URL, pass --db <secret>, or stash one:\n  printf %s "<dev app DB url>" | qwirq secret set ${secret} --stdin`) }
+      }
+      const script = typeof flags.script === 'string' ? flags.script : 'dev'
+      process.stderr.write(`qwirq dev: dev app DB bound (QWIRQ_DB_URL); running \`npm run ${script}\`\n`)
+      const r = spawnSync('npm', ['run', script], { stdio: 'inherit', shell: true, env: { ...process.env, QWIRQ_DB_URL: url } })
+      process.exit(r.status ?? 0)
     }
 
     case 'whoami': {
