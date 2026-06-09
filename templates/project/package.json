@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx scripts/dev.ts",
+    "types": "tsx scripts/types.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
