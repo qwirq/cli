@@ -11,6 +11,21 @@ import { parseArgs, out, fail, readStdin, promptHidden, promptYesNo, copyToClipb
 
 const here = dirname(fileURLToPath(import.meta.url))
 
+// Resolve a dev app-DB connection for `qwirq dev` / `qwirq types`: QWIRQ_DB_URL, a --db secret, or
+// `<qwirq.yaml id>_dev_db_url` from the vault. Exits via fail() if it cannot.
+async function resolveDevDbUrl(flags) {
+  if (process.env.QWIRQ_DB_URL) return process.env.QWIRQ_DB_URL
+  let secret = typeof flags.db === 'string' ? flags.db : null
+  if (!secret) {
+    let id
+    try { id = (readFileSync('qwirq.yaml', 'utf8').match(/^id:\s*(\S+)/m) || [])[1] } catch { /* no manifest */ }
+    if (!id) return fail('run this in a project dir (with qwirq.yaml), or set QWIRQ_DB_URL, or pass --db <secret>')
+    secret = `${id}_dev_db_url`
+  }
+  try { return (await apiFetch('POST', `/api/v1/secrets/${encodeURIComponent(secret)}/reveal`)).value }
+  catch { return fail(`no dev DB: secret "${secret}" not found. Set QWIRQ_DB_URL, pass --db <secret>, or stash one:\n  printf %s "<dev app DB url>" | qwirq secret set ${secret} --stdin`) }
+}
+
 const HELP = `qwirq — Knowledge (Texere) + Secrets from the terminal
 
   qwirq login [--no-browser]        sign in (device flow)
@@ -51,6 +66,7 @@ const HELP = `qwirq — Knowledge (Texere) + Secrets from the terminal
 
   qwirq init <name>                 scaffold a QWIRQ app (qwirq.yaml + React UI + @qwirq/tasks/cmdb)
   qwirq dev [--db <secret>]         run the project locally with a dev app DB bound (QWIRQ_DB_URL)
+  qwirq types [--db <secret>]       generate .qwirq/schema.d.ts (typed bridge against your real schema)
 
   qwirq project ls                  list projects (repos) you can access
   qwirq project new <slug> [--name <t>]   create a project (private repo)
@@ -294,21 +310,21 @@ async function main() {
     case 'dev': {
       // Run the project's dev script with the dev app-DB connection bound as QWIRQ_DB_URL, so server-side
       // code using @qwirq/tasks/@qwirq/cmdb runs locally. DX-1 (the local authoring loop).
-      let url = process.env.QWIRQ_DB_URL
-      if (!url) {
-        let secret = typeof flags.db === 'string' ? flags.db : null
-        if (!secret) {
-          let id
-          try { id = (readFileSync('qwirq.yaml', 'utf8').match(/^id:\s*(\S+)/m) || [])[1] } catch { /* no manifest */ }
-          if (!id) return fail('run this in a project dir (with qwirq.yaml), or set QWIRQ_DB_URL, or pass --db <secret>')
-          secret = `${id}_dev_db_url`
-        }
-        try { url = (await apiFetch('POST', `/api/v1/secrets/${encodeURIComponent(secret)}/reveal`)).value }
-        catch { return fail(`no dev DB: secret "${secret}" not found. Set QWIRQ_DB_URL, pass --db <secret>, or stash one:\n  printf %s "<dev app DB url>" | qwirq secret set ${secret} --stdin`) }
-      }
+      const url = await resolveDevDbUrl(flags)
+      if (!url) return
       const script = typeof flags.script === 'string' ? flags.script : 'dev'
       process.stderr.write(`qwirq dev: dev app DB bound (QWIRQ_DB_URL); running \`npm run ${script}\`\n`)
       const r = spawnSync('npm', ['run', script], { stdio: 'inherit', shell: true, env: { ...process.env, QWIRQ_DB_URL: url } })
+      process.exit(r.status ?? 0)
+    }
+
+    case 'types': {
+      // Schema-to-types codegen (DX-2): bind the dev app DB and run the project's `types` script, which
+      // writes .qwirq/schema.d.ts so `createBridge<QwirqDB>()` types every bridge('table') to real columns.
+      const url = await resolveDevDbUrl(flags)
+      if (!url) return
+      process.stderr.write('qwirq types: introspecting the app DB; writing .qwirq/schema.d.ts\n')
+      const r = spawnSync('npm', ['run', 'types'], { stdio: 'inherit', shell: true, env: { ...process.env, QWIRQ_DB_URL: url } })
       process.exit(r.status ?? 0)
     }
 
