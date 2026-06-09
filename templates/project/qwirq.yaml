@@ -1,0 +1,8 @@
+id: __NAME__
+name: __NAME__
+icon: folder
+nav: { section: apps, order: 50 }
+provides:
+  app: { entry: src/app/index.tsx }
+runtime: node20
+platform: "2026.06"
