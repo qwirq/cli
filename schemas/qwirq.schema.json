@@ -51,15 +51,29 @@
         },
         "functions": {
           "type": "array",
-          "description": "Backend logic run in the in-instance runner (optionally exposed as an HTTP route).",
+          "description": "Server functions: backend logic run in the in-instance runner, served at POST /api/apps/{id}/fn/{name} (contract v1; see the 'Server functions' article in the knowledge base).",
           "items": {
             "type": "object",
             "additionalProperties": false,
             "required": ["name", "entry"],
             "properties": {
-              "name": { "type": "string" },
-              "entry": { "type": "string" },
-              "http": { "type": "string", "description": "Optional HTTP binding, e.g. 'POST /assign'." }
+              "name": {
+                "type": "string",
+                "pattern": "^[a-zA-Z][a-zA-Z0-9_-]*$",
+                "description": "Stable function identifier within the app; part of the invocation URL."
+              },
+              "entry": { "type": "string", "description": "Path to the handler module (default-exports async (ctx, input) => json)." },
+              "http": { "type": "string", "description": "Reserved: REST-style alias, e.g. 'POST /assign'. Accepted now; alias routing is a fast-follow. The canonical /fn/{name} route always works." },
+              "tool": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["description"],
+                "description": "Declare this function as a Mabel tool (F-010). Calls arrive as actor 'mabel' on behalf of an authenticated user; authorization evaluates as that user. Declaration is v1-stable; Mabel execution is a fast-follow.",
+                "properties": {
+                  "description": { "type": "string", "minLength": 1, "description": "What the tool does, written for the assistant." },
+                  "parameters": { "type": "object", "description": "JSON Schema for the tool's input (also documents the function's input shape)." }
+                }
+              }
             }
           }
         },
