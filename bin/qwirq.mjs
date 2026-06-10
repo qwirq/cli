@@ -61,11 +61,15 @@ const HELP = `qwirq — Knowledge (Texere) + Secrets from the terminal
   qwirq node access <qid>           show a document/thread's audience (open, or who it's restricted to)
   qwirq node restrict <qid> <email|role|group> [--role|--group] [--manage] [--remove]
 
-  qwirq secret ls [query] [--mine|--company]   list/search secrets (name · key · description)
-  qwirq secret show <name>          view a secret object (label, logical key, description; value hidden)
+  qwirq secret ls [query] [--mine|--company] [--cat <c>]   list/search secrets, grouped by category
+  qwirq secret show <name>          view a secret object (label, key, category, scope; value hidden)
   qwirq secret reveal <name>        print a secret value (audited)
   qwirq secret copy <name>          copy a secret value to the clipboard (audited; no terminal echo)
-  qwirq secret set <name> [--stdin] [--label <t>] [--key <k>] [--desc <text>]   set value and/or metadata
+  qwirq secret set <name> [--stdin] [--label <t>] [--key <k>] [--desc <text>] [--cat <c>]   set value/metadata/category
+  qwirq secret cat new <name> [--desc <t>]   create a category (organize; categories never grant access)
+  qwirq secret cat ls               list categories (with how many secrets you can see in each)
+  qwirq secret cat rename <old> <new>   rename a category
+  qwirq secret cat rm <name>        delete a category (its secrets become Uncategorized; nothing is deleted)
   qwirq secret rm <name> [--yes]    delete a secret (asks to confirm)
   qwirq secret share <name> <email|role|group> [--role|--group] [--read|--manage|--own]
   qwirq secret unshare <name> <email|role|group> [--role|--group]
@@ -584,6 +588,46 @@ async function main() {
     case 'secret': {
       const sub = positional[0]
       const name = positional[1]
+
+      // Categories ORGANIZE, never AUTHORIZE (grants stay per-secret). `qwirq secret cat <new|ls|rename|rm>`.
+      if (sub === 'cat') {
+        const catsub = positional[1]
+        if (catsub === 'new') {
+          const cname = positional[2]
+          if (!cname) return fail('usage: qwirq secret cat new <name> [--desc <text>]')
+          const body = { name: cname }
+          if (flags.desc !== undefined || flags.description !== undefined) body.description = String(flags.desc ?? flags.description)
+          await apiFetch('POST', '/api/v1/secrets/categories', { body })
+          out(`Created category "${cname}". File secrets into it with: qwirq secret set <name> --cat ${cname}`)
+          return
+        }
+        if (catsub === 'ls') {
+          const { categories } = await apiFetch('GET', '/api/v1/secrets/categories')
+          if (!categories.length) { out('(no categories — create one with: qwirq secret cat new <name>)'); return }
+          for (const c of categories) {
+            const desc = c.description ? `  — ${c.description}` : ''
+            out(`${c.name}  (${c.secretCount} secret${c.secretCount === 1 ? '' : 's'})${desc}`)
+          }
+          return
+        }
+        if (catsub === 'rename') {
+          const oldName = positional[2]
+          const newName = positional[3]
+          if (!oldName || !newName) return fail('usage: qwirq secret cat rename <old> <new>')
+          await apiFetch('PATCH', `/api/v1/secrets/categories/${encodeURIComponent(oldName)}`, { body: { newName } })
+          out(`Renamed category "${oldName}" → "${newName}".`)
+          return
+        }
+        if (catsub === 'rm') {
+          const cname = positional[2]
+          if (!cname) return fail('usage: qwirq secret cat rm <name>')
+          const r = await apiFetch('DELETE', `/api/v1/secrets/categories/${encodeURIComponent(cname)}`)
+          out(`Deleted category "${cname}".${r.unfiled ? ` ${r.unfiled} secret${r.unfiled === 1 ? '' : 's'} became Uncategorized (no secret was deleted).` : ''}`)
+          return
+        }
+        return fail('usage: qwirq secret cat <new|ls|rename|rm>')
+      }
+
       if (sub === 'ls' || sub === 'search') {
         const { secrets } = await apiFetch('GET', '/api/v1/secrets')
         let list = secrets
@@ -591,13 +635,32 @@ async function main() {
         if (flags.company) list = list.filter((s) => s.scope === 'company')
         const q = (positional[1] || '').toLowerCase()
         if (q) list = list.filter((s) => [s.label, s.name, s.key, s.description].some((f) => (f || '').toLowerCase().includes(q)))
-        if (!list.length) { out(q ? `(no secrets match "${positional[1]}")` : '(no secrets)'); return }
-        for (const s of list) {
+        if (typeof flags.cat === 'string') {
+          const want = flags.cat.toLowerCase()
+          const uncat = want === '' || want === 'uncategorized'
+          list = list.filter((s) => (uncat ? !s.category : (s.category || '').toLowerCase() === want))
+        }
+        if (!list.length) { out(q ? `(no secrets match "${positional[1]}")` : flags.cat !== undefined ? '(no secrets in that category)' : '(no secrets)'); return }
+        const fmtLine = (s) => {
           const title = s.label || s.name
           const bits = [s.label ? s.name : null, s.key ? `key:${s.key}` : null, s.scope === 'company' ? `company · ${s.owner}` : null].filter(Boolean)
           const meta = bits.length ? `  [${bits.join(' · ')}]` : ''
           const desc = s.description ? `  — ${s.description}` : ''
-          out(`${title}${meta}${desc}`)
+          return `${title}${meta}${desc}`
+        }
+        // Group by category (Uncategorized last) so a sprawling vault reads as an organized one.
+        // Stay flat (unchanged) when no categories are in play, so non-users see no extra noise.
+        const groups = new Map()
+        for (const s of list) { const k = s.category || null; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(s) }
+        const named = [...groups.keys()].filter((k) => k !== null).sort((a, b) => a.localeCompare(b))
+        if (!named.length && flags.cat === undefined) { for (const s of list) out(fmtLine(s)); return }
+        const order = [...named, ...(groups.has(null) ? [null] : [])]
+        let first = true
+        for (const k of order) {
+          if (!first) out('')
+          first = false
+          out(`# ${k === null ? 'Uncategorized' : k}`)
+          for (const s of groups.get(k)) out(`  ${fmtLine(s)}`)
         }
         return
       }
@@ -608,6 +671,7 @@ async function main() {
         if (s.description) out(`  ${s.description}`)
         if (s.label) out(`  logical key: ${s.name}`)
         out(`  key:         ${s.key || '(none)'}`)
+        out(`  category:    ${s.category || '(uncategorized)'}`)
         out(`  scope:       ${s.scope}${s.scope === 'company' ? ` (owner ${s.owner})` : ''}`)
         out(`  value:       (hidden — run: qwirq secret reveal ${s.name})`)
         return
@@ -631,11 +695,12 @@ async function main() {
         return
       }
       if (sub === 'set') {
-        if (!name) return fail('usage: qwirq secret set <name> [--stdin] [--label <text>] [--key <k>] [--desc <text>]')
+        if (!name) return fail('usage: qwirq secret set <name> [--stdin] [--label <text>] [--key <k>] [--desc <text>] [--cat <category>]')
         const hasLabel = flags.label !== undefined
         const hasKey = flags.key !== undefined
         const hasDesc = flags.desc !== undefined || flags.description !== undefined
-        const hasMeta = hasLabel || hasKey || hasDesc
+        const hasCat = flags.cat !== undefined // --cat <name> files it; --cat "" clears to Uncategorized
+        const hasMeta = hasLabel || hasKey || hasDesc || hasCat
         const body = {}
         if (flags.stdin) {
           body.value = (await readStdin()).replace(/\r?\n$/, '')
@@ -647,11 +712,22 @@ async function main() {
         if (hasLabel) body.label = String(flags.label)
         if (hasKey) body.key = String(flags.key)
         if (hasDesc) body.description = String(flags.desc ?? flags.description)
+        if (hasCat) body.category = flags.cat === true ? '' : String(flags.cat)
+        // Filing into a category that doesn't exist: refuse with the fix (the existing categories +
+        // how to make one), rather than a server error. Clearing (--cat "") needs no check.
+        if (hasCat && body.category !== '') {
+          const { categories } = await apiFetch('GET', '/api/v1/secrets/categories')
+          if (!categories.some((c) => c.name.toLowerCase() === body.category.toLowerCase())) {
+            const have = categories.length ? categories.map((c) => c.name).join(', ') : '(none yet)'
+            return fail(`no category "${body.category}". Existing: ${have}. Create it with: qwirq secret cat new ${body.category}`)
+          }
+        }
         const parts = []
         if (body.value !== undefined) parts.push('value')
         if (hasLabel) parts.push('name')
         if (hasKey) parts.push('key')
         if (hasDesc) parts.push('description')
+        if (hasCat) parts.push(body.category === '' ? 'uncategorized' : `category=${body.category}`)
         if (!parts.length) return fail('nothing to set')
         await apiFetch('PUT', `/api/v1/secrets/${encodeURIComponent(name)}`, { body })
         out(`Set ${name} (${parts.join(', ')}).`)
