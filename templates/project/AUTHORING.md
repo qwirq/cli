@@ -32,11 +32,27 @@ await b('your_table').where({ some_column: 'x' }).all()   // columns autocomplet
 
 Regenerate after any schema change. `.qwirq/` is gitignored (it is generated).
 
+## The manifest (`qwirq.yaml`)
+
+`qwirq.yaml` declares how your project presents and runs: `id`/`name`/`icon`/`nav`, an optional PDP
+`requires` gate, and `provides` (a UI `app`, backend `functions`, scheduled `jobs`) plus `data.migrations`,
+`runtime`, and the `platform` pin. The build pipeline parses it into your instance's app registry entry +
+runner entries. Full field reference: the JSON schema at `https://qwirq.com/schemas/qwirq.schema.json`.
+
+**Validation + autocomplete** are wired out of the box: `qwirq init` writes `.qwirq/qwirq.schema.json` and
+adds a `# yaml-language-server: $schema=…` line to `qwirq.yaml`, so with the standard **YAML** extension
+(`redhat.vscode-yaml`) the manifest validates + autocompletes inline. Check it from the terminal anytime:
+
+```sh
+qwirq validate          # validates ./qwirq.yaml against the schema
+qwirq schema            # (existing projects) add the schema + $schema line if you don't have them
+```
+
 ## VS Code
 
-Install the **QWIRQ** extension (`apps/vscode`, `qwirq-vscode-*.vsix`) for `qwirq.yaml` validation, the
-CLI in the Command Palette ("QWIRQ:"), `Generate Schema Types`, and snippets. Set `qwirq.cliCommand` if
-`qwirq` is not on your PATH.
+Install the **QWIRQ** extension (`apps/vscode`, `qwirq-vscode-*.vsix`) for the CLI in the Command Palette
+("QWIRQ:"), `Generate Schema Types`, and snippets. Set `qwirq.cliCommand` if `qwirq` is not on your PATH.
+(Manifest validation works with just the YAML extension above — the QWIRQ extension is not required for it.)
 
 ## Shipping
 
