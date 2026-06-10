@@ -93,18 +93,47 @@ export function openBrowser(url) {
   } catch { return false }
 }
 
-// Minimal arg parser: positionals + `--flag value` / `--flag` (boolean).
+// Minimal arg parser: positionals + `--flag value` / `--flag` (boolean). A flag repeated on the
+// command line accumulates into an array (e.g. `--field a=1 --field b=2`); used once it stays a
+// scalar, so existing single-use callers are unaffected.
 export function parseArgs(argv) {
   const positional = []
   const flags = {}
+  const set = (key, val) => {
+    if (key in flags) flags[key] = Array.isArray(flags[key]) ? [...flags[key], val] : [flags[key], val]
+    else flags[key] = val
+  }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a.startsWith('--')) {
       const key = a.slice(2)
       const next = argv[i + 1]
-      if (next === undefined || next.startsWith('--')) { flags[key] = true }
-      else { flags[key] = next; i++ }
+      if (next === undefined || next.startsWith('--')) set(key, true)
+      else { set(key, next); i++ }
     } else positional.push(a)
   }
   return { positional, flags }
+}
+
+// Normalize a flag that may be absent / a single value / repeated into an array of strings.
+export function asList(v) {
+  if (v === undefined || v === true) return []
+  return Array.isArray(v) ? v.map(String) : [String(v)]
+}
+
+// Parse `key=value` pairs (from repeated `--field k=v` / `--attr k=v`) into an object. Values are
+// JSON-parsed when they look like JSON (numbers, booleans, null, arrays, objects, quoted strings),
+// otherwise kept as the raw string. So `--field points=3` stores a number, `--field note=hi` a string.
+export function parseKeyVals(list) {
+  const obj = {}
+  for (const item of asList(list)) {
+    const eq = item.indexOf('=')
+    if (eq < 0) throw new Error(`expected key=value, got "${item}"`)
+    const k = item.slice(0, eq)
+    const raw = item.slice(eq + 1)
+    let val = raw
+    try { val = JSON.parse(raw) } catch { /* keep as string */ }
+    obj[k] = val
+  }
+  return obj
 }
