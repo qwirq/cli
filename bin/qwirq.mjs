@@ -4,10 +4,10 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { readdirSync, readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
 import { join, resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { apiFetch } from '../src/api.mjs'
+import { apiFetch, appCall } from '../src/api.mjs'
 import { login } from '../src/login.mjs'
 import { loadConfig, clearConfig, readToken } from '../src/config.mjs'
-import { parseArgs, out, fail, readStdin, promptHidden, promptYesNo, copyToClipboard, editInEditor } from '../src/util.mjs'
+import { parseArgs, asList, parseKeyVals, out, fail, readStdin, promptHidden, promptYesNo, copyToClipboard, editInEditor } from '../src/util.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -84,6 +84,37 @@ const HELP = `qwirq — Knowledge (Texere) + Secrets from the terminal
   qwirq data query "<sql>" [--env]  run SQL against your app database
   qwirq data migrate [--dir <d>] [--env]   apply *.sql migrations (default dir: migrations)
   qwirq data migrations [--env]     list applied migrations
+
+  qwirq work init [--env]           create the work-item tables in your app database
+  qwirq work-type define <name> --prefix <P> --states a,b,c [--initial a] [--transitions "a>b,b>c"]
+                                    [--parents t1,t2 | --no-parent] [--ext] [--required f1,f2]   define a work-item type
+  qwirq work-type ls                list work-item types
+  qwirq work-type show <name>       show one type's policy
+  qwirq work-type rm <name>         remove a type
+  qwirq work ls [--type t] [--state s] [--assignee a] [--parent <ref> | --roots]   list work items
+  qwirq work show <ref>             show a work item (fields, links, CIs, recent events)
+  qwirq work new --type t --title "..." [--parent <ref>] [--assignee a] [--priority n] [--due d] [--field k=v ...]
+  qwirq work set <ref> [--title <t>] [--assignee a] [--priority n] [--due d] [--field k=v ...]
+  qwirq work move <ref> <parentRef | --root>    re-parent a work item
+  qwirq work transition <ref> <state> [--note "..."]   move it to a new state
+  qwirq work tree <ref>             print the subtree under a work item
+  qwirq work rm <ref> [--yes]       delete a work item (must have no children)
+  qwirq work link <from> <to> --type <t> [--remove]    typed link between two work items
+  qwirq work link-ci <ref> <ciRef> [--rel <r>] [--remove]   link a work item to a CMDB CI
+
+  qwirq ci init [--env]             create the CMDB tables in your app database
+  qwirq ci-type define <name> --prefix <P> [--attr k=type ...]   define a CI type
+  qwirq ci-type ls                  list CI types
+  qwirq ci-type show <name>         show one CI type
+  qwirq ci-type rm <name>           remove a CI type
+  qwirq ci ls [--type t] [--name n]   list CIs
+  qwirq ci show <ref>               show a CI and its relationships
+  qwirq ci new --type t --name "..." [--attr k=v ...]
+  qwirq ci set <ref> [--name <n>] [--attr k=v ...]
+  qwirq ci rm <ref> [--yes]         delete a CI (its relationships cascade)
+  qwirq ci relate <from> <to> --type <relType> [--remove]   typed directional CI relationship
+
+  (work/ci verbs accept --env <e>; default prod. Run 'qwirq work init' / 'qwirq ci init' once first.)
 
 Endpoints come from ~/.qwirq/config.json (override: QWIRQ_API_URL, QWIRQ_AUTH_URL, QWIRQ_GIT_URL).`
 
@@ -650,6 +681,296 @@ async function main() {
         return
       }
       return fail('usage: qwirq group <ls|create|members|add|rm>')
+    }
+
+    case 'work-type': {
+      // Define + inspect work-item TYPES (declarative policy; tenant data, no domain vocabulary baked in).
+      const sub = positional[0]
+      const name = positional[1]
+      const env = typeof flags.env === 'string' ? flags.env : undefined
+      if (sub === 'define') {
+        if (!name || typeof flags.prefix !== 'string') return fail('usage: qwirq work-type define <name> --prefix <P> --states a,b,c [--initial a] [--transitions "a>b,b>c"] [--parents t1,t2|--no-parent] [--ext] [--required f1,f2]')
+        const states = String(flags.states || '').split(',').map((s) => s.trim()).filter(Boolean)
+        if (!states.length) return fail('--states is required (comma-separated, e.g. open,closed)')
+        const initialState = typeof flags.initial === 'string' ? flags.initial : states[0]
+        const transitions = {}
+        for (const pair of String(flags.transitions || '').split(',').map((s) => s.trim()).filter(Boolean)) {
+          const [from, to] = pair.split('>').map((s) => s.trim())
+          if (!from || !to) return fail(`bad --transitions entry "${pair}" (expected from>to)`)
+          ;(transitions[from] ||= []).push(to)
+        }
+        const requiredFields = String(flags.required || '').split(',').map((s) => s.trim()).filter(Boolean)
+        const allowedParentTypes = flags['no-parent']
+          ? []
+          : (typeof flags.parents === 'string' ? flags.parents.split(',').map((s) => s.trim()).filter(Boolean) : null)
+        const policy = { initialState, states, transitions, allowedParentTypes, requiredFields, hasExtension: !!flags.ext }
+        const { type } = await appCall('tasks', { op: 'type-define', env, name, prefix: flags.prefix, policy })
+        out(`defined work-item type ${type.name} (prefix ${type.prefix}); states: ${type.policy.states.join(', ')}`)
+        return
+      }
+      if (sub === 'ls') {
+        const { types } = await appCall('tasks', { op: 'type-ls', env })
+        if (!types.length) { out('(no work-item types — run: qwirq work init, then qwirq work-type define …)'); return }
+        for (const t of types) out(`${t.name}\t${t.prefix}\t[${t.policy.states.join(', ')}]${t.policy.hasExtension ? '  +ext' : ''}`)
+        return
+      }
+      if (sub === 'show') {
+        if (!name) return fail('usage: qwirq work-type show <name>')
+        const { type } = await appCall('tasks', { op: 'type-get', env, name })
+        if (!type) { out(`(no such type: ${name})`); return }
+        out(`${type.name}  (prefix ${type.prefix})`)
+        out(`  states:     ${type.policy.states.join(', ')}`)
+        out(`  initial:    ${type.policy.initialState}`)
+        const tr = Object.entries(type.policy.transitions)
+        out(`  transitions:${tr.length ? '' : ' (none — all states terminal)'}`)
+        for (const [from, tos] of tr) out(`    ${from} -> ${tos.join(', ')}`)
+        out(`  parents:    ${type.policy.allowedParentTypes === null ? 'any' : (type.policy.allowedParentTypes.length ? type.policy.allowedParentTypes.join(', ') : 'none (root only)')}`)
+        out(`  extension:  ${type.policy.hasExtension ? `yes${type.policy.requiredFields.length ? ` (required: ${type.policy.requiredFields.join(', ')})` : ''}` : 'no'}`)
+        return
+      }
+      if (sub === 'rm') {
+        if (!name) return fail('usage: qwirq work-type rm <name>')
+        await appCall('tasks', { op: 'type-rm', env, name })
+        out(`removed work-item type ${name}.`)
+        return
+      }
+      return fail('usage: qwirq work-type <define|ls|show|rm>')
+    }
+
+    case 'work': {
+      // The primary interface for work items (WORKPLAN-PLAN §5): CRUD, state transitions, the parent tree,
+      // typed links, and the CMDB CI seam. Items are addressed by short id (T-1) or numeric id.
+      const sub = positional[0]
+      const ref = positional[1]
+      const env = typeof flags.env === 'string' ? flags.env : undefined
+      if (sub === 'init') {
+        const { applied } = await appCall('tasks', { op: 'migrate', env })
+        out(applied.length ? `created work-item tables (${applied.join(', ')}).` : 'work-item tables already present.')
+        return
+      }
+      if (sub === 'ls') {
+        const filter = {}
+        if (typeof flags.type === 'string') filter.type = flags.type
+        if (typeof flags.state === 'string') filter.state = flags.state
+        if (typeof flags.assignee === 'string') filter.assignee = flags.assignee
+        if (flags.roots) filter.parent = null
+        else if (typeof flags.parent === 'string') filter.parent = flags.parent
+        const { items } = await appCall('tasks', { op: 'list', env, filter })
+        if (!items.length) { out('(no work items)'); return }
+        for (const w of items) out(`${w.shortId}\t${w.state}\t${w.title}${w.assignee ? `\t@${w.assignee}` : ''}`)
+        return
+      }
+      if (sub === 'show') {
+        if (!ref) return fail('usage: qwirq work show <ref>')
+        const { item } = await appCall('tasks', { op: 'get', env, ref })
+        out(`${item.shortId}  ${item.title}`)
+        out(`  type:   ${item.type}`)
+        out(`  state:  ${item.state}`)
+        if (item.parentId) out(`  parent: ${item.parentId}`)
+        if (item.assignee) out(`  assignee: ${item.assignee}`)
+        if (item.priority != null) out(`  priority: ${item.priority}`)
+        if (item.due) out(`  due:    ${item.due}`)
+        if (item.fields && Object.keys(item.fields).length) out(`  fields: ${JSON.stringify(item.fields)}`)
+        const { links } = await appCall('tasks', { op: 'links', env, ref })
+        for (const l of links.outgoing) out(`  link →  ${l.linkType} ${l.toId}`)
+        for (const l of links.incoming) out(`  link ←  ${l.linkType} ${l.fromId}`)
+        const { cis } = await appCall('tasks', { op: 'cis', env, ref })
+        for (const c of cis) out(`  ci:     ${c.rel} ${c.ciId}`)
+        const { events } = await appCall('tasks', { op: 'events', env, ref })
+        for (const e of events.slice(-5)) out(`  · ${e.at}  ${e.kind}${e.fromState ? ` ${e.fromState}->${e.toState}` : e.toState ? ` ${e.toState}` : ''}${e.actor ? `  by ${e.actor}` : ''}`)
+        return
+      }
+      if (sub === 'new') {
+        if (typeof flags.type !== 'string' || typeof flags.title !== 'string') return fail('usage: qwirq work new --type <t> --title "..." [--parent <ref>] [--assignee a] [--priority n] [--due d] [--field k=v ...]')
+        const input = { type: flags.type, title: flags.title }
+        if (typeof flags.parent === 'string') input.parent = flags.parent
+        if (typeof flags.assignee === 'string') input.assignee = flags.assignee
+        if (flags.priority !== undefined && flags.priority !== true) input.priority = Number(flags.priority)
+        if (typeof flags.due === 'string') input.due = flags.due
+        const fields = parseKeyVals(flags.field)
+        if (Object.keys(fields).length) input.fields = fields
+        const { item } = await appCall('tasks', { op: 'create', env, input })
+        out(`created ${item.shortId}  ${item.title}  [${item.state}]`)
+        return
+      }
+      if (sub === 'set') {
+        if (!ref) return fail('usage: qwirq work set <ref> [--title <t>] [--assignee a] [--priority n] [--due d] [--field k=v ...]')
+        const patch = {}
+        if (typeof flags.title === 'string') patch.title = flags.title
+        if (flags.assignee !== undefined) patch.assignee = flags.assignee === true ? null : flags.assignee
+        if (flags.priority !== undefined) patch.priority = flags.priority === true ? null : Number(flags.priority)
+        if (flags.due !== undefined) patch.due = flags.due === true ? null : flags.due
+        const fields = parseKeyVals(flags.field)
+        if (Object.keys(fields).length) patch.fields = fields
+        if (!Object.keys(patch).length) return fail('nothing to change (use --title/--assignee/--priority/--due/--field)')
+        const { item } = await appCall('tasks', { op: 'update', env, ref, patch })
+        out(`updated ${item.shortId}.`)
+        return
+      }
+      if (sub === 'move') {
+        if (!ref) return fail('usage: qwirq work move <ref> <parentRef | --root>')
+        const parent = flags.root ? null : positional[2]
+        if (parent === undefined) return fail('provide a new parent ref, or --root to detach to the top level')
+        const { item } = await appCall('tasks', { op: 'set-parent', env, ref, parent })
+        out(`moved ${item.shortId} ${parent == null ? 'to root' : `under ${parent}`}.`)
+        return
+      }
+      if (sub === 'transition') {
+        const toState = positional[2]
+        if (!ref || !toState) return fail('usage: qwirq work transition <ref> <state> [--note "..."]')
+        const { item } = await appCall('tasks', { op: 'transition', env, ref, toState, note: typeof flags.note === 'string' ? flags.note : undefined })
+        out(`${item.shortId} → ${item.state}`)
+        return
+      }
+      if (sub === 'tree') {
+        if (!ref) return fail('usage: qwirq work tree <ref>')
+        const { tree } = await appCall('tasks', { op: 'tree', env, ref })
+        const lines = []
+        const walk = (n, depth) => { lines.push(`${'  '.repeat(depth)}${n.shortId}  ${n.title}  [${n.state}]`); for (const c of n.children) walk(c, depth + 1) }
+        walk(tree, 0)
+        out(lines.join('\n'))
+        return
+      }
+      if (sub === 'rm') {
+        if (!ref) return fail('usage: qwirq work rm <ref> [--yes]')
+        if (!flags.yes) {
+          const okGo = await promptYesNo(`Delete work item ${ref}? This cannot be undone. [y/N] `)
+          if (okGo === null) return fail('refusing to delete in a non-interactive shell without --yes')
+          if (!okGo) { out('Cancelled.'); return }
+        }
+        await appCall('tasks', { op: 'remove', env, ref })
+        out(`deleted ${ref}.`)
+        return
+      }
+      if (sub === 'link') {
+        const to = positional[2]
+        if (!ref || !to || typeof flags.type !== 'string') return fail('usage: qwirq work link <from> <to> --type <t> [--remove]')
+        if (flags.remove) { await appCall('tasks', { op: 'unlink', env, from: ref, to, linkType: flags.type }); out(`unlinked ${ref} -[${flags.type}]-> ${to}.`); return }
+        await appCall('tasks', { op: 'link', env, from: ref, to, linkType: flags.type })
+        out(`linked ${ref} -[${flags.type}]-> ${to}.`)
+        return
+      }
+      if (sub === 'link-ci') {
+        const ciRef = positional[2]
+        if (!ref || !ciRef) return fail('usage: qwirq work link-ci <ref> <ciRef> [--rel <r>] [--remove]')
+        // The seam stores a numeric CI id (a soft reference). Resolve a CI short id (BLD-1) to its
+        // numeric id via cmdb first; a numeric ref passes straight through.
+        let ciId = ciRef
+        if (!/^\d+$/.test(String(ciRef))) ciId = (await appCall('cmdb', { op: 'get', env, ref: ciRef })).ci.id
+        const rel = typeof flags.rel === 'string' ? flags.rel : undefined
+        if (flags.remove) { await appCall('tasks', { op: 'unlink-ci', env, ref, ciId, rel }); out(`unlinked ${ref} from CI ${ciRef}.`); return }
+        await appCall('tasks', { op: 'link-ci', env, ref, ciId, rel })
+        out(`linked ${ref} to CI ${ciRef}${rel ? ` (${rel})` : ''}.`)
+        return
+      }
+      return fail('usage: qwirq work <init|ls|show|new|set|move|transition|tree|rm|link|link-ci>')
+    }
+
+    case 'ci-type': {
+      const sub = positional[0]
+      const name = positional[1]
+      const env = typeof flags.env === 'string' ? flags.env : undefined
+      if (sub === 'define') {
+        if (!name || typeof flags.prefix !== 'string') return fail('usage: qwirq ci-type define <name> --prefix <P> [--attr k=type ...]')
+        const attributeSchema = parseKeyVals(flags.attr)
+        const { type } = await appCall('cmdb', { op: 'type-define', env, name, prefix: flags.prefix, attributeSchema })
+        out(`defined CI type ${type.name} (prefix ${type.prefix}).`)
+        return
+      }
+      if (sub === 'ls') {
+        const { types } = await appCall('cmdb', { op: 'type-ls', env })
+        if (!types.length) { out('(no CI types — run: qwirq ci init, then qwirq ci-type define …)'); return }
+        for (const t of types) out(`${t.name}\t${t.prefix}${Object.keys(t.attributeSchema).length ? `\t{${Object.keys(t.attributeSchema).join(', ')}}` : ''}`)
+        return
+      }
+      if (sub === 'show') {
+        if (!name) return fail('usage: qwirq ci-type show <name>')
+        const { type } = await appCall('cmdb', { op: 'type-get', env, name })
+        if (!type) { out(`(no such CI type: ${name})`); return }
+        out(`${type.name}  (prefix ${type.prefix})`)
+        if (Object.keys(type.attributeSchema).length) out(`  attributes: ${JSON.stringify(type.attributeSchema)}`)
+        return
+      }
+      if (sub === 'rm') {
+        if (!name) return fail('usage: qwirq ci-type rm <name>')
+        await appCall('cmdb', { op: 'type-rm', env, name })
+        out(`removed CI type ${name}.`)
+        return
+      }
+      return fail('usage: qwirq ci-type <define|ls|show|rm>')
+    }
+
+    case 'ci': {
+      // Configuration items: the lightweight subject primitive (WORKPLAN-PLAN §2). CRUD + typed
+      // directional relationships. Addressed by short id (BLD-1) or numeric id.
+      const sub = positional[0]
+      const ref = positional[1]
+      const env = typeof flags.env === 'string' ? flags.env : undefined
+      if (sub === 'init') {
+        const { applied } = await appCall('cmdb', { op: 'migrate', env })
+        out(applied.length ? `created CMDB tables (${applied.join(', ')}).` : 'CMDB tables already present.')
+        return
+      }
+      if (sub === 'ls') {
+        const filter = {}
+        if (typeof flags.type === 'string') filter.type = flags.type
+        if (typeof flags.name === 'string') filter.name = flags.name
+        const { cis } = await appCall('cmdb', { op: 'list', env, filter })
+        if (!cis.length) { out('(no CIs)'); return }
+        for (const c of cis) out(`${c.shortId}\t${c.type}\t${c.name}`)
+        return
+      }
+      if (sub === 'show') {
+        if (!ref) return fail('usage: qwirq ci show <ref>')
+        const { ci } = await appCall('cmdb', { op: 'get', env, ref })
+        out(`${ci.shortId}  ${ci.name}`)
+        out(`  type: ${ci.type}`)
+        if (Object.keys(ci.attributes).length) out(`  attributes: ${JSON.stringify(ci.attributes)}`)
+        const { relationships } = await appCall('cmdb', { op: 'relationships', env, ref })
+        for (const r of relationships.outgoing) out(`  rel →  ${r.relType} ${r.toId}`)
+        for (const r of relationships.incoming) out(`  rel ←  ${r.relType} ${r.fromId}`)
+        return
+      }
+      if (sub === 'new') {
+        if (typeof flags.type !== 'string' || typeof flags.name !== 'string') return fail('usage: qwirq ci new --type <t> --name "..." [--attr k=v ...]')
+        const input = { type: flags.type, name: flags.name }
+        const attributes = parseKeyVals(flags.attr)
+        if (Object.keys(attributes).length) input.attributes = attributes
+        const { ci } = await appCall('cmdb', { op: 'create', env, input })
+        out(`created ${ci.shortId}  ${ci.name}`)
+        return
+      }
+      if (sub === 'set') {
+        if (!ref) return fail('usage: qwirq ci set <ref> [--name <n>] [--attr k=v ...]')
+        const patch = {}
+        if (typeof flags.name === 'string') patch.name = flags.name
+        const attributes = parseKeyVals(flags.attr)
+        if (Object.keys(attributes).length) patch.attributes = attributes
+        if (!Object.keys(patch).length) return fail('nothing to change (use --name/--attr)')
+        const { ci } = await appCall('cmdb', { op: 'update', env, ref, patch })
+        out(`updated ${ci.shortId}.`)
+        return
+      }
+      if (sub === 'rm') {
+        if (!ref) return fail('usage: qwirq ci rm <ref> [--yes]')
+        if (!flags.yes) {
+          const okGo = await promptYesNo(`Delete CI ${ref} and its relationships? This cannot be undone. [y/N] `)
+          if (okGo === null) return fail('refusing to delete in a non-interactive shell without --yes')
+          if (!okGo) { out('Cancelled.'); return }
+        }
+        await appCall('cmdb', { op: 'remove', env, ref })
+        out(`deleted ${ref}.`)
+        return
+      }
+      if (sub === 'relate') {
+        const to = positional[2]
+        if (!ref || !to || typeof flags.type !== 'string') return fail('usage: qwirq ci relate <from> <to> --type <relType> [--remove]')
+        if (flags.remove) { await appCall('cmdb', { op: 'unrelate', env, from: ref, to, relType: flags.type }); out(`unrelated ${ref} -[${flags.type}]-> ${to}.`); return }
+        await appCall('cmdb', { op: 'relate', env, from: ref, to, relType: flags.type })
+        out(`related ${ref} -[${flags.type}]-> ${to}.`)
+        return
+      }
+      return fail('usage: qwirq ci <init|ls|show|new|set|rm|relate>')
     }
 
     default:
