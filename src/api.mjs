@@ -12,11 +12,19 @@ export async function apiFetch(method, path, { body, auth = true } = {}) {
   if (auth) headers.Authorization = `Bearer ${token}`
   if (body !== undefined) headers['content-type'] = 'application/json'
 
-  const res = await fetch(cfg.apiBase + path, {
-    method,
-    headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  })
+  const url = cfg.apiBase + path
+  let res
+  try {
+    res = await fetch(url, {
+      method,
+      headers,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    })
+  } catch (e) {
+    // Network-level failure (DNS, refused, offline). Name the URL we tried + the endpoint config,
+    // so a bare "fetch failed" never leaves the user guessing which host or override is wrong (#98).
+    throw new Error(`could not reach the QWIRQ API at ${url} (${e?.cause?.code || e?.code || e?.message || 'fetch failed'}). Check your connection, or the apiBase endpoint (QWIRQ_API_URL / ~/.qwirq/config.json).`)
+  }
   const data = await res.json().catch(() => null)
   if (!res.ok) {
     if (res.status === 401) throw new Error('Not signed in or token expired. Run: qwirq login')

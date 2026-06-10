@@ -8,7 +8,10 @@ import { join } from 'node:path'
 import { mkdirSync, readFileSync, writeFileSync, rmSync, existsSync } from 'node:fs'
 import { keychainStore, keychainRead, keychainClear, keychainName } from './keychain.mjs'
 
-const DEFAULTS = { authBase: 'http://localhost:4000', apiBase: 'http://localhost:5000', gitBase: 'https://git.qwirq.com' }
+// Compiled-in defaults are the PRODUCTION endpoints, so a fresh or wiped config works out of the
+// box (#98). Platform devs point at localhost with the env overrides (QWIRQ_AUTH_URL / QWIRQ_API_URL
+// / QWIRQ_GIT_URL) or by writing authBase/apiBase/gitBase into ~/.qwirq/config.json.
+const DEFAULTS = { authBase: 'https://auth.qwirq.com', apiBase: 'https://api.qwirq.com', gitBase: 'https://git.qwirq.com' }
 
 function dir() {
   return process.env.QWIRQ_HOME || join(homedir(), '.qwirq')
@@ -74,10 +77,18 @@ export function writeToken(token) {
   return null
 }
 
+// Log out: drop ONLY the auth identity (token + active company), never the endpoints (#98).
+// Wiping the whole file used to strip authBase/apiBase/gitBase too, so after a logout every command
+// (including `login`) fell back to defaults — which is now harmless since the defaults are prod, but
+// an explicit endpoint override (a platform dev pointed at localhost, a self-hoster) must survive a
+// logout. Keep any endpoint keys that were set; remove the file entirely if nothing else remains.
 export function clearConfig() {
   const f = readFile()
   if (f.tokenStore === 'keychain') keychainClear()
-  if (existsSync(file())) rmSync(file())
+  const keep = {}
+  for (const k of ['authBase', 'apiBase', 'gitBase']) if (f[k] !== undefined) keep[k] = f[k]
+  if (Object.keys(keep).length) writeFile(keep)
+  else if (existsSync(file())) rmSync(file())
 }
 
 export { keychainName }

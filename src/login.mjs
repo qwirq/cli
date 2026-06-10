@@ -8,8 +8,16 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 export async function login({ noBrowser = false } = {}) {
   const { authBase } = loadConfig()
 
-  const startRes = await fetch(`${authBase}/api/device/code`, { method: 'POST' })
-  if (!startRes.ok) throw new Error(`could not reach auth at ${authBase} (${startRes.status})`)
+  const codeUrl = `${authBase}/api/device/code`
+  let startRes
+  try {
+    startRes = await fetch(codeUrl, { method: 'POST' })
+  } catch (e) {
+    // Network-level failure: name the URL + the endpoint config so login never dies on a bare
+    // "fetch failed" (#98 — the failure mode that bricked a client after `qwirq logout`).
+    throw new Error(`could not reach auth at ${codeUrl} (${e?.cause?.code || e?.code || e?.message || 'fetch failed'}). Check your connection, or the authBase endpoint (QWIRQ_AUTH_URL / ~/.qwirq/config.json).`)
+  }
+  if (!startRes.ok) throw new Error(`could not reach auth at ${codeUrl} (${startRes.status})`)
   const d = await startRes.json()
 
   out('')
@@ -28,11 +36,14 @@ export async function login({ noBrowser = false } = {}) {
   const deadline = Date.now() + (d.expires_in || 600) * 1000
   while (Date.now() < deadline) {
     await sleep(interval)
-    const r = await fetch(`${authBase}/api/device/token`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ device_code: d.device_code }),
-    })
+    let r
+    try {
+      r = await fetch(`${authBase}/api/device/token`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ device_code: d.device_code }),
+      })
+    } catch { continue } // transient network blip mid-poll: keep waiting, don't crash the login
     const j = await r.json().catch(() => ({}))
     if (r.ok && j.access_token) {
       const backend = writeToken(j.access_token)
