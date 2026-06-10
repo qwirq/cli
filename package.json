@@ -1,6 +1,6 @@
 {
   "name": "@qwirq/cli",
-  "version": "0.4.3",
+  "version": "0.5.0",
   "type": "module",
   "bin": {
     "qwirq": "bin/qwirq.mjs"
@@ -17,7 +17,8 @@
   "scripts": {
     "qwirq": "node bin/qwirq.mjs",
     "verify": "node scripts/verify.mjs",
-    "verify:robustness": "node scripts/verify-robustness.mjs"
+    "verify:robustness": "node scripts/verify-robustness.mjs",
+    "verify:secrets-cat": "node scripts/verify-secrets-cat.mjs"
   },
   "dependencies": {
     "yaml": "^2.4.5"
