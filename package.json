@@ -1,7 +1,6 @@
 {
   "name": "@qwirq/cli",
   "version": "0.4.1",
-  "private": true,
   "type": "module",
   "bin": {
     "qwirq": "bin/qwirq.mjs"
