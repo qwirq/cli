@@ -133,7 +133,12 @@ const HELP = `qwirq — Knowledge (Texere) + Secrets from the terminal
 
   (work/ci verbs accept --env <e>; default prod. Run 'qwirq work init' / 'qwirq ci init' once first.)
 
-Endpoints come from ~/.qwirq/config.json (override: QWIRQ_API_URL, QWIRQ_AUTH_URL, QWIRQ_GIT_URL).`
+Endpoints default to production (auth/api/git .qwirq.com) and can be overridden in
+~/.qwirq/config.json (keys authBase/apiBase/gitBase) or per-command via QWIRQ_AUTH_URL,
+QWIRQ_API_URL, QWIRQ_GIT_URL. \`qwirq logout\` clears your login but keeps those overrides.
+
+Exit codes (stable, for scripts): 0 success; 1 any error (a message is printed to stderr).
+A \`dev\`/\`types\` run exits with the underlying npm script's code.`
 
 function indentTree(nodes, depth, lines) {
   for (const n of nodes || []) {
@@ -373,7 +378,8 @@ async function main() {
       if (!errors.length) { out(`${file} is valid.`); return }
       err(`${file} has ${errors.length} problem${errors.length === 1 ? '' : 's'}:`)
       for (const e of errors) err(`  - ${e}`)
-      process.exit(1)
+      process.exitCode = 1
+      return
     }
 
     case 'schema': {
@@ -400,7 +406,8 @@ async function main() {
       const script = typeof flags.script === 'string' ? flags.script : 'dev'
       process.stderr.write(`qwirq dev: dev app DB bound (QWIRQ_DB_URL); running \`npm run ${script}\`\n`)
       const r = spawnSync('npm', ['run', script], { stdio: 'inherit', shell: true, env: { ...process.env, QWIRQ_DB_URL: url } })
-      process.exit(r.status ?? 0)
+      process.exitCode = r.status ?? 0
+      return
     }
 
     case 'types': {
@@ -410,7 +417,8 @@ async function main() {
       if (!url) return
       process.stderr.write('qwirq types: introspecting the app DB; writing .qwirq/schema.d.ts\n')
       const r = spawnSync('npm', ['run', 'types'], { stdio: 'inherit', shell: true, env: { ...process.env, QWIRQ_DB_URL: url } })
-      process.exit(r.status ?? 0)
+      process.exitCode = r.status ?? 0
+      return
     }
 
     case 'whoami': {
