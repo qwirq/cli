@@ -7,7 +7,8 @@ import { fileURLToPath } from 'node:url'
 import { apiFetch, appCall } from '../src/api.mjs'
 import { login } from '../src/login.mjs'
 import { loadConfig, clearConfig, readToken } from '../src/config.mjs'
-import { parseArgs, asList, parseKeyVals, out, fail, readStdin, promptHidden, promptYesNo, copyToClipboard, editInEditor } from '../src/util.mjs'
+import { parseArgs, asList, parseKeyVals, out, err, fail, readStdin, promptHidden, promptYesNo, copyToClipboard, editInEditor } from '../src/util.mjs'
+import { parseManifestText, validateManifest, writeLocalSchema, ensureModeline, LOCAL_SCHEMA_REL, SCHEMA_URL } from '../src/manifest.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -65,6 +66,9 @@ const HELP = `qwirq — Knowledge (Texere) + Secrets from the terminal
   qwirq group rm <name> <email>     remove a member from a group (admin)
 
   qwirq init <name>                 scaffold a QWIRQ app (qwirq.yaml + React UI + @qwirq/tasks/cmdb)
+  qwirq validate [--file <f>]       validate qwirq.yaml against the manifest schema (default: ./qwirq.yaml)
+  qwirq schema [--url]              add editor validation: write .qwirq/qwirq.schema.json + a $schema line
+                                    to qwirq.yaml (use --url to point at the public schema URL instead)
   qwirq dev [--db <secret>]         run the project locally with a dev app DB bound (QWIRQ_DB_URL)
   qwirq types [--db <secret>]       generate .qwirq/schema.d.ts (typed bridge against your real schema)
 
@@ -330,11 +334,48 @@ async function main() {
         }
       }
       walk(tplRoot, dest)
+      // Wire editor validation (DX-5 #44): drop the schema into .qwirq/ and point qwirq.yaml at it, so
+      // the manifest validates + autocompletes in VS Code (with the standard YAML extension) out of the box.
+      writeLocalSchema(dest)
+      const manifestPath = join(dest, 'qwirq.yaml')
+      writeFileSync(manifestPath, ensureModeline(readFileSync(manifestPath, 'utf8'), LOCAL_SCHEMA_REL))
       out(`Scaffolded ${name}/  (qwirq.yaml + a React app + @qwirq/tasks/@qwirq/cmdb on the app DB)`)
       out('next:')
       out(`  cd ${name}`)
       out('  npm install        # pulls @qwirq/* (needs a read:packages token in your .npmrc)')
       out('  qwirq dev          # binds a dev app DB and runs it')
+      return
+    }
+
+    case 'validate': {
+      // Validate qwirq.yaml against the manifest schema — the same schema the editor validates against,
+      // so the CLI and the editor agree. DX-5 (#44).
+      const file = typeof flags.file === 'string' ? flags.file : 'qwirq.yaml'
+      let text
+      try { text = readFileSync(file, 'utf8') }
+      catch { return fail(`no ${file} here (run in a project dir, or pass --file <path>)`) }
+      let value
+      try { value = parseManifestText(text) } catch (e) { return fail(e.message) }
+      const errors = validateManifest(value)
+      if (!errors.length) { out(`${file} is valid.`); return }
+      err(`${file} has ${errors.length} problem${errors.length === 1 ? '' : 's'}:`)
+      for (const e of errors) err(`  - ${e}`)
+      process.exit(1)
+    }
+
+    case 'schema': {
+      // Turn on editor validation for an EXISTING project: write the schema into .qwirq/ and add the
+      // yaml-language-server modeline to qwirq.yaml (or point at the public URL with --url). DX-5 (#44).
+      const file = typeof flags.file === 'string' ? flags.file : 'qwirq.yaml'
+      if (!existsSync(file)) return fail(`no ${file} here (run in a project dir, or pass --file <path>)`)
+      const ref = flags.url ? SCHEMA_URL : writeLocalSchema(process.cwd())
+      const before = readFileSync(file, 'utf8')
+      const after = ensureModeline(before, ref)
+      if (after === before) { out(`${file} already references a schema.`); return }
+      writeFileSync(file, after)
+      out(flags.url
+        ? `Pointed ${file} at ${SCHEMA_URL}. Reopen it in VS Code to validate + autocomplete.`
+        : `Wrote ${LOCAL_SCHEMA_REL} and pointed ${file} at it. Reopen it in VS Code to validate + autocomplete.`)
       return
     }
 

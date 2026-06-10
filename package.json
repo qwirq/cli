@@ -1,15 +1,25 @@
 {
   "name": "@qwirq/cli",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "bin": {
     "qwirq": "bin/qwirq.mjs"
   },
+  "files": [
+    "bin",
+    "src",
+    "schemas",
+    "templates"
+  ],
   "engines": {
     "node": ">=18"
   },
   "scripts": {
-    "qwirq": "node bin/qwirq.mjs"
+    "qwirq": "node bin/qwirq.mjs",
+    "verify": "node scripts/verify.mjs"
+  },
+  "dependencies": {
+    "yaml": "^2.4.5"
   }
 }
