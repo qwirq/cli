@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=.qwirq/qwirq.schema.json
 id: __NAME__
 name: __NAME__
 icon: folder
