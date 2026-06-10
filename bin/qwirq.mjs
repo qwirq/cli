@@ -12,19 +12,32 @@ import { parseManifestText, validateManifest, writeLocalSchema, ensureModeline, 
 
 const here = dirname(fileURLToPath(import.meta.url))
 
-// Resolve a dev app-DB connection for `qwirq dev` / `qwirq types`: QWIRQ_DB_URL, a --db secret, or
-// `<qwirq.yaml id>_dev_db_url` from the vault. Exits via fail() if it cannot.
+// Resolve a dev app-DB connection for `qwirq dev` / `qwirq types` (#64). Order:
+//   QWIRQ_DB_URL  >  --db <secret>  >  the platform dev-connection endpoint (lazily creates the
+//   tenant's dev branch)  >  the legacy `<qwirq.yaml id>_dev_db_url` vault secret.
+// Exits via fail() if nothing resolves.
 async function resolveDevDbUrl(flags) {
   if (process.env.QWIRQ_DB_URL) return process.env.QWIRQ_DB_URL
-  let secret = typeof flags.db === 'string' ? flags.db : null
-  if (!secret) {
-    let id
-    try { id = (readFileSync('qwirq.yaml', 'utf8').match(/^id:\s*(\S+)/m) || [])[1] } catch { /* no manifest */ }
-    if (!id) return fail('run this in a project dir (with qwirq.yaml), or set QWIRQ_DB_URL, or pass --db <secret>')
-    secret = `${id}_dev_db_url`
+  if (typeof flags.db === 'string') {
+    try { return (await apiFetch('POST', `/api/v1/secrets/${encodeURIComponent(flags.db)}/reveal`)).value }
+    catch { return fail(`no dev DB: secret "${flags.db}" not found`) }
   }
-  try { return (await apiFetch('POST', `/api/v1/secrets/${encodeURIComponent(secret)}/reveal`)).value }
-  catch { return fail(`no dev DB: secret "${secret}" not found. Set QWIRQ_DB_URL, pass --db <secret>, or stash one:\n  printf %s "<dev app DB url>" | qwirq secret set ${secret} --stdin`) }
+  // The platform path: the control plane returns (and first-time creates) YOUR tenant's dev
+  // environment, a copy-on-write branch of prod. No hand-stashed secret needed.
+  try {
+    const r = await apiFetch('GET', '/api/v1/data/connection?env=dev')
+    if (r && r.uri) {
+      if (r.created) console.error('qwirq: created your dev database environment (a branch of prod)')
+      return r.uri
+    }
+  } catch { /* fall through to the legacy stashed secret */ }
+  let id
+  try { id = (readFileSync('qwirq.yaml', 'utf8').match(/^id:\s*(\S+)/m) || [])[1] } catch { /* no manifest */ }
+  if (id) {
+    try { return (await apiFetch('POST', `/api/v1/secrets/${encodeURIComponent(id + '_dev_db_url')}/reveal`)).value }
+    catch { /* nothing stashed either */ }
+  }
+  return fail('no dev DB: the platform could not issue a dev connection (signed in? has `qwirq data provision` run?). Set QWIRQ_DB_URL or pass --db <secret>.')
 }
 
 const HELP = `qwirq — Knowledge (Texere) + Secrets from the terminal
