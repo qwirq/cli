@@ -8,9 +8,14 @@ import { join } from 'node:path'
 export function out(s = '') { process.stdout.write(s + '\n') }
 export function err(s = '') { process.stderr.write(s + '\n') }
 
+// Report an error and mark a failing exit, WITHOUT a hard process.exit (#98). Calling process.exit()
+// while a handle (a pipe write, the keychain child, stdin) is mid-close raced libuv into a
+// UV_HANDLE_CLOSING assertion on Windows and clobbered the exit code (observed 127). Setting
+// process.exitCode and letting the event loop drain naturally exits cleanly with code 1, so scripted
+// callers can branch on it. Returns undefined so `return fail(...)` still short-circuits its caller.
 export function fail(message) {
   err('error: ' + message)
-  process.exit(1)
+  process.exitCode = 1
 }
 
 // Read all of piped stdin (for `--stdin` value input).
