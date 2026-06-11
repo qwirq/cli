@@ -4,7 +4,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { readdirSync, readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
 import { join, resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { apiFetch, appCall } from '../src/api.mjs'
+import { apiFetch, appCall, authFetch } from '../src/api.mjs'
 import { login } from '../src/login.mjs'
 import { loadConfig, clearConfig, readToken } from '../src/config.mjs'
 import { parseArgs, asList, parseKeyVals, out, err, fail, readStdin, promptHidden, promptYesNo, copyToClipboard, editInEditor } from '../src/util.mjs'
@@ -75,6 +75,14 @@ const HELP = `qwirq — Knowledge (Texere) + Secrets from the terminal
   qwirq secret unshare <name> <email|role|group> [--role|--group]
   qwirq secret grants <name>        show who a secret is shared with
   qwirq members                     list your company's members
+
+  qwirq token mint [--name <l>] [--scope <s>] [--expires <days> | --no-expiry]   mint a personal access token (shown once)
+  qwirq token ls                    list your access tokens (status, scope, dates; never the value)
+  qwirq token revoke <qid> [--yes]  revoke one of your tokens (takes effect immediately)
+  qwirq agent ls                    list agent principals (owner only)
+  qwirq agent token <email> [--name <l>] [--scope <s>] [--expires <days> | --no-expiry]   mint a PAT for an agent (owner only)
+  qwirq agent tokens <email>        list an agent's tokens (owner only)
+  qwirq agent revoke <email> <qid> [--yes]   revoke an agent's token (owner only)
 
   qwirq group ls                    list groups
   qwirq group create <name>         create a group (admin)
@@ -771,6 +779,113 @@ async function main() {
         return
       }
       return fail('usage: qwirq secret <ls|search|show|reveal|copy|set|rm|share|unshare|grants>')
+    }
+
+    case 'token': {
+      // Personal access tokens (qwirq_pat_) for CLI / agent / API use (#115). auth owns the table, so
+      // these route to authBase. mint prints the plaintext ONCE; ls/revoke never expose it.
+      const sub = positional[0]
+      // --expires <days> sets a TTL; --no-expiry mints a non-expiring token; neither = server default.
+      const mintBody = () => {
+        const body = {}
+        if (typeof flags.name === 'string') body.name = flags.name
+        if (typeof flags.scope === 'string') body.scope = flags.scope
+        if (flags['no-expiry']) body.ttlDays = null
+        else if (flags.expires !== undefined && flags.expires !== true) body.ttlDays = Number(flags.expires)
+        return body
+      }
+      const printMinted = (r) => {
+        out(r.token) // value to stdout (clean for capture)
+        process.stderr.write(`Minted token #${r.qid} for ${r.for}. Shown once — store it now (it is not recoverable).\n`)
+        process.stderr.write('Sensitive: keep it out of logs, history, and shared files.\n')
+      }
+      const fmtToken = (t) => {
+        const status = t.revokedAt ? 'REVOKED' : (t.expiresAt && new Date(t.expiresAt) < new Date() ? 'EXPIRED' : 'active')
+        const used = t.lastUsedAt ? `used ${t.lastUsedAt.slice(0, 10)}` : 'never used'
+        const exp = t.expiresAt ? `expires ${t.expiresAt.slice(0, 10)}` : 'no expiry'
+        return `${String(t.qid).padEnd(5)} ${status.padEnd(8)} ${t.name}${t.scope ? ` [scope:${t.scope}]` : ''}  ·  created ${t.createdAt.slice(0, 10)} · ${used} · ${exp}`
+      }
+      if (sub === 'mint') {
+        const r = await authFetch('POST', '/api/tokens', { body: mintBody() })
+        printMinted(r)
+        return
+      }
+      if (sub === 'ls') {
+        const { tokens, for: who } = await authFetch('GET', '/api/tokens')
+        if (!tokens.length) { out('(no tokens)'); return }
+        out(`tokens for ${who}:`)
+        for (const t of tokens) out('  ' + fmtToken(t))
+        return
+      }
+      if (sub === 'revoke') {
+        const qid = positional[1]
+        if (!qid) return fail('usage: qwirq token revoke <qid> [--yes]')
+        if (!flags.yes) {
+          const ok = await promptYesNo(`Revoke token #${qid}? Anything using it stops working immediately. [y/N] `)
+          if (ok === null) return fail('refusing to revoke in a non-interactive shell without --yes')
+          if (!ok) { out('Cancelled.'); return }
+        }
+        await authFetch('DELETE', `/api/tokens/${encodeURIComponent(qid)}`)
+        out(`Revoked token #${qid}.`)
+        return
+      }
+      return fail('usage: qwirq token <mint|ls|revoke>\n  mint [--name <l>] [--scope <s>] [--expires <days> | --no-expiry]')
+    }
+
+    case 'agent': {
+      // Agent principals (users.kind='agent') + their PATs (#115/#83). Owner-gated. Lets the owner mint
+      // a web-scoped PAT for an agent (claude@/pursuit@) so it can use the session exchange — moving it
+      // off a vaulted password. mintBody mirrors `token`.
+      const sub = positional[0]
+      const email = positional[1]
+      const mintBody = (forEmail) => {
+        const body = { forEmail }
+        if (typeof flags.name === 'string') body.name = flags.name
+        if (typeof flags.scope === 'string') body.scope = flags.scope
+        if (flags['no-expiry']) body.ttlDays = null
+        else if (flags.expires !== undefined && flags.expires !== true) body.ttlDays = Number(flags.expires)
+        return body
+      }
+      const fmtToken = (t) => {
+        const status = t.revokedAt ? 'REVOKED' : (t.expiresAt && new Date(t.expiresAt) < new Date() ? 'EXPIRED' : 'active')
+        const exp = t.expiresAt ? `expires ${t.expiresAt.slice(0, 10)}` : 'no expiry'
+        return `${String(t.qid).padEnd(5)} ${status.padEnd(8)} ${t.name}${t.scope ? ` [scope:${t.scope}]` : ''}  ·  ${exp}`
+      }
+      if (sub === 'ls') {
+        const { agents } = await authFetch('GET', '/api/agents')
+        if (!agents.length) { out('(no agent principals)'); return }
+        for (const a of agents) out(`${a.email}  (${a.roleName})`)
+        return
+      }
+      if (sub === 'token') {
+        if (!email) return fail('usage: qwirq agent token <email> [--name <l>] [--scope <s>] [--expires <days> | --no-expiry]')
+        const r = await authFetch('POST', '/api/tokens', { body: mintBody(email) })
+        out(r.token)
+        process.stderr.write(`Minted token #${r.qid} for agent ${r.for}. Shown once — store it in the agent's config now.\n`)
+        process.stderr.write('Sensitive: keep it out of logs, history, and shared files.\n')
+        return
+      }
+      if (sub === 'tokens') {
+        if (!email) return fail('usage: qwirq agent tokens <email>')
+        const { tokens, for: who } = await authFetch('GET', `/api/tokens?email=${encodeURIComponent(email)}`)
+        if (!tokens.length) { out(`(no tokens for ${who})`); return }
+        out(`tokens for ${who}:`)
+        for (const t of tokens) out('  ' + fmtToken(t))
+        return
+      }
+      if (sub === 'revoke') {
+        const qid = positional[2]
+        if (!email || !qid) return fail('usage: qwirq agent revoke <email> <qid> [--yes]')
+        if (!flags.yes) {
+          const ok = await promptYesNo(`Revoke agent ${email}'s token #${qid}? It stops working immediately. [y/N] `)
+          if (ok === null) return fail('refusing to revoke in a non-interactive shell without --yes')
+          if (!ok) { out('Cancelled.'); return }
+        }
+        await authFetch('DELETE', `/api/tokens/${encodeURIComponent(qid)}?email=${encodeURIComponent(email)}`)
+        out(`Revoked agent ${email}'s token #${qid}.`)
+        return
+      }
+      return fail('usage: qwirq agent <ls|token|tokens|revoke>\n  token <email> [--name <l>] [--scope <s>] [--expires <days> | --no-expiry]')
     }
 
     case 'members': {
