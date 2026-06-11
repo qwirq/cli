@@ -153,6 +153,10 @@ const HELP = `qwirq — Knowledge (Texere) + Secrets from the terminal
 
   (work/ci verbs accept --env <e>; default prod. Run 'qwirq work init' / 'qwirq ci init' once first.)
 
+  Pass --as <email> to any authenticated command to ASSERT your identity: the CLI verifies the
+  signed-in session resolves to that email and refuses (exit 1, no write) on a mismatch, so a script
+  never mis-attributes a write to whoever happens to be logged in.
+
 Endpoints default to production (auth/api/git .qwirq.com) and can be overridden in
 ~/.qwirq/config.json (keys authBase/apiBase/gitBase) or per-command via QWIRQ_AUTH_URL,
 QWIRQ_API_URL, QWIRQ_GIT_URL. \`qwirq logout\` clears your login but keeps those overrides.
@@ -255,6 +259,23 @@ async function main() {
   const { positional, flags } = parseArgs(argv.slice(1))
 
   if (!group || group === 'help' || flags.help || group === '--help') { out(HELP); return }
+
+  // Identity-assertion guard (#148, FRICTION-9): `--as <email>` verifies the ambient session actually
+  // resolves to that identity before running anything, and REFUSES on a mismatch, so a script can never
+  // silently mis-attribute a write to whoever happens to be signed in. Opt-in; skipped for local /
+  // no-session commands and the git credential-helper (whose stdout is a strict protocol).
+  const NO_IDENTITY = new Set(['login', 'logout', 'credential-helper', 'git', 'validate', 'schema', 'init', 'clone'])
+  if (typeof flags.as === 'string' && flags.as.trim() && !NO_IDENTITY.has(group)) {
+    const expected = flags.as.trim().toLowerCase()
+    let me
+    try { me = await apiFetch('GET', '/api/v1/whoami') }
+    catch (e) { return fail(`--as ${flags.as}: could not verify the active identity (${e.message})`) }
+    const actual = String(me?.user?.email ?? '')
+    if (actual.toLowerCase() !== expected) {
+      return fail(`--as ${flags.as}, but this session is signed in as ${actual || '(unknown)'}. Refusing so the write is not mis-attributed; run \`qwirq login\` as ${flags.as}, or drop --as.`)
+    }
+    err(`✓ acting as ${actual}${me.company?.name ? ` · ${me.company.name}` : ''}`)
+  }
 
   switch (group) {
     case 'login': return login({ noBrowser: !!flags['no-browser'] })
