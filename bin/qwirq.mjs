@@ -80,6 +80,8 @@ const HELP = `qwirq — Knowledge (Texere) + Secrets from the terminal
   qwirq token ls                    list your access tokens (status, scope, dates; never the value)
   qwirq token revoke <qid> [--yes]  revoke one of your tokens (takes effect immediately)
   qwirq agent ls                    list agent principals (owner only)
+  qwirq agent new <email> [--role builder|admin|...]   create an agent principal (no password; owner only)
+  qwirq agent suspend <email> [--yes]   suspend an agent — revokes ALL its tokens + disables it (owner only)
   qwirq agent token <email> [--name <l>] [--scope <s>] [--expires <days> | --no-expiry]   mint a PAT for an agent (owner only)
   qwirq agent tokens <email>        list an agent's tokens (owner only)
   qwirq agent revoke <email> <qid> [--yes]   revoke an agent's token (owner only)
@@ -116,10 +118,15 @@ const HELP = `qwirq — Knowledge (Texere) + Secrets from the terminal
 
   qwirq work init [--env]           create the work-item tables in your app database
   qwirq work-type define <name> --prefix <P> --states a,b,c [--initial a] [--transitions "a>b,b>c"]
-                                    [--parents t1,t2 | --no-parent] [--ext] [--required f1,f2]   define a work-item type
+                                    [--parents t1,t2 | --no-parent] [--require-parent] [--ext] [--required f1,f2]
+                                    [--transition-rule "a>b:assignee,note,fields(x|y)"] [--field-type "k:enum(x|y)"]   define a work-item type
+  qwirq work-type update <name> [--prefix P] [any define flag …]   evolve a type's policy (no occupied state may vanish)
   qwirq work-type ls                list work-item types
-  qwirq work-type show <name>       show one type's policy
+  qwirq work-type show <name>       show one type's policy (states, transitions, rules, field types)
   qwirq work-type rm <name>         remove a type
+  qwirq link-type define <name> [--from-types a,b] [--to-types c,d] [--from-states s] [--max-from N] [--max-to N]
+                                    register/constrain a typed link (unregistered link types stay opaque)
+  qwirq link-type ls | show <name> | rm <name>   inspect / unregister link-type constraints
   qwirq work ls [--type t] [--state s] [--assignee a] [--parent <ref> | --roots]   list work items
   qwirq work show <ref>             show a work item (fields, links, CIs, recent events)
   qwirq work new --type t --title "..." [--parent <ref>] [--assignee a] [--priority n] [--due d] [--field k=v ...]
@@ -133,6 +140,7 @@ const HELP = `qwirq — Knowledge (Texere) + Secrets from the terminal
 
   qwirq ci init [--env]             create the CMDB tables in your app database
   qwirq ci-type define <name> --prefix <P> [--attr k=type ...]   define a CI type
+  qwirq ci-type update <name> [--prefix P] [--attr k=type ...]   update prefix / merge attribute schema
   qwirq ci-type ls                  list CI types
   qwirq ci-type show <name>         show one CI type
   qwirq ci-type rm <name>           remove a CI type
@@ -158,6 +166,87 @@ function indentTree(nodes, depth, lines) {
     lines.push(`${'  '.repeat(depth)}${mark} ${n.restricted ? '🔒 ' : ''}${n.title}  (${n.qid})`)
     if (n.children?.length) indentTree(n.children, depth + 1, lines)
   }
+}
+
+const csv = (s) => String(s).split(',').map((x) => x.trim()).filter(Boolean)
+
+// Parse a --transition-rule "<from>><to>:<flag>[,<flag>]" into [edge, rule] (tasks 0.2, #124). Flags:
+// note|assignee|weave (booleans) and fields(a|b|c) (requireFields list). e.g. "todo>doing:assignee,note".
+function parseTransitionRule(s) {
+  const ci = s.indexOf(':')
+  const edge = (ci < 0 ? s : s.slice(0, ci)).trim()
+  if (!/^[^>]+>[^>]+$/.test(edge)) throw new Error(`bad --transition-rule edge "${edge}" (expected from>to)`)
+  const rule = {}
+  for (const f of (ci < 0 ? '' : s.slice(ci + 1)).split(',').map((x) => x.trim()).filter(Boolean)) {
+    const m = f.match(/^fields\(([^)]*)\)$/)
+    if (m) rule.requireFields = m[1].split('|').map((x) => x.trim()).filter(Boolean)
+    else if (f === 'note') rule.requireNote = true
+    else if (f === 'assignee') rule.requireAssignee = true
+    else if (f === 'weave') rule.requireWeave = true
+    else throw new Error(`unknown transition-rule flag "${f}" (note|assignee|weave|fields(a|b))`)
+  }
+  return [edge, rule]
+}
+
+// Parse a --field-type "<name>:<kind>[(v1|v2)]" into [name, fieldType] (tasks 0.2, #124). Kinds:
+// string|number|boolean|date|enum(a|b)|numeric-enum(1|2|3). e.g. "points:numeric-enum(1|2|3|5|8)".
+function parseFieldType(s) {
+  const ci = s.indexOf(':')
+  if (ci < 0) throw new Error(`bad --field-type "${s}" (expected name:kind)`)
+  const name = s.slice(0, ci).trim()
+  const m = s.slice(ci + 1).trim().match(/^([a-z-]+)(?:\(([^)]*)\))?$/)
+  if (!m) throw new Error(`bad --field-type spec for "${name}"`)
+  const kind = m[1]
+  const vals = (m[2] || '').split('|').map((x) => x.trim()).filter(Boolean)
+  if (kind === 'enum') return [name, { kind: 'enum', values: vals }]
+  if (kind === 'numeric-enum') return [name, { kind: 'numeric-enum', values: vals.map(Number) }]
+  if (['string', 'number', 'boolean', 'date'].includes(kind)) return [name, { kind }]
+  throw new Error(`unknown field-type kind "${kind}" (string|number|boolean|date|enum(...)|numeric-enum(...))`)
+}
+
+// Build a work-item-type policy from flags, merged onto `base` (the existing policy for `update`, {} for
+// `define`). Only keys whose flags are present are overridden; the rest carry over. Covers the 0.1 policy
+// + the 0.2 keys (requireParent, transitionRules, fieldTypes) so both define and update set them (#124).
+function buildPolicy(flags, base = {}, requireStates = false) {
+  const policy = { ...base }
+  if (flags.states !== undefined) {
+    const states = csv(flags.states)
+    if (!states.length) throw new Error('--states must be a non-empty comma list')
+    policy.states = states
+  }
+  if (requireStates && !(policy.states && policy.states.length)) throw new Error('--states is required (e.g. open,closed)')
+  if (flags.initial !== undefined) policy.initialState = String(flags.initial)
+  else if (policy.initialState == null && policy.states) policy.initialState = policy.states[0]
+  if (flags.transitions !== undefined) {
+    const transitions = {}
+    for (const pair of csv(flags.transitions)) {
+      const [from, to] = pair.split('>').map((s) => s.trim())
+      if (!from || !to) throw new Error(`bad --transitions entry "${pair}" (expected from>to)`)
+      ;(transitions[from] ||= []).push(to)
+    }
+    policy.transitions = transitions
+  } else if (policy.transitions == null) policy.transitions = {}
+  if (flags['no-parent']) policy.allowedParentTypes = []
+  else if (flags.parents !== undefined) policy.allowedParentTypes = csv(flags.parents)
+  else if (policy.allowedParentTypes === undefined) policy.allowedParentTypes = null
+  if (flags.required !== undefined) policy.requiredFields = csv(flags.required)
+  else if (policy.requiredFields == null) policy.requiredFields = []
+  if (flags.ext) policy.hasExtension = true
+  else if (flags['no-ext']) policy.hasExtension = false
+  else if (policy.hasExtension == null) policy.hasExtension = false
+  if (flags['require-parent']) policy.requireParent = true
+  else if (flags['no-require-parent']) policy.requireParent = false
+  const rules = asList(flags['transition-rule'])
+  if (rules.length) {
+    policy.transitionRules = { ...(policy.transitionRules || {}) }
+    for (const r of rules) { const [edge, rule] = parseTransitionRule(r); policy.transitionRules[edge] = rule }
+  }
+  const fts = asList(flags['field-type'])
+  if (fts.length) {
+    policy.fieldTypes = { ...(policy.fieldTypes || {}) }
+    for (const f of fts) { const [n, ft] = parseFieldType(f); policy.fieldTypes[n] = ft }
+  }
+  return policy
 }
 
 async function main() {
@@ -857,6 +946,27 @@ async function main() {
         for (const a of agents) out(`${a.email}  (${a.roleName})`)
         return
       }
+      if (sub === 'new') {
+        // Create an agent principal (kind='agent', no password); mint its PAT separately via `agent token`.
+        if (!email) return fail('usage: qwirq agent new <email> [--role owner|admin|builder|member|viewer]')
+        const body = { email }
+        if (typeof flags.role === 'string') body.role = flags.role
+        const { agent } = await authFetch('POST', '/api/agents', { body })
+        out(`Created agent ${agent.email} (${agent.roleName}). Mint its token with: qwirq agent token ${agent.email} --scope web`)
+        return
+      }
+      if (sub === 'suspend') {
+        // Suspend an agent: revoke ALL its tokens + disable it immediately (#129).
+        if (!email) return fail('usage: qwirq agent suspend <email> [--yes]')
+        if (!flags.yes) {
+          const ok = await promptYesNo(`Suspend agent ${email}? This revokes ALL its tokens and disables it immediately. [y/N] `)
+          if (ok === null) return fail('refusing to suspend in a non-interactive shell without --yes')
+          if (!ok) { out('Cancelled.'); return }
+        }
+        const r = await authFetch('POST', `/api/agents/${encodeURIComponent(email)}/suspend`)
+        out(`Suspended agent ${r.email}. Revoked ${r.revoked} token${r.revoked === 1 ? '' : 's'}; it can no longer authenticate.`)
+        return
+      }
       if (sub === 'token') {
         if (!email) return fail('usage: qwirq agent token <email> [--name <l>] [--scope <s>] [--expires <days> | --no-expiry]')
         const r = await authFetch('POST', '/api/tokens', { body: mintBody(email) })
@@ -885,7 +995,7 @@ async function main() {
         out(`Revoked agent ${email}'s token #${qid}.`)
         return
       }
-      return fail('usage: qwirq agent <ls|token|tokens|revoke>\n  token <email> [--name <l>] [--scope <s>] [--expires <days> | --no-expiry]')
+      return fail('usage: qwirq agent <ls|new|suspend|token|tokens|revoke>\n  new <email> [--role ...]   suspend <email> [--yes]   token <email> [--scope web] [--expires <days>|--no-expiry]')
     }
 
     case 'members': {
@@ -942,23 +1052,29 @@ async function main() {
       const name = positional[1]
       const env = typeof flags.env === 'string' ? flags.env : undefined
       if (sub === 'define') {
-        if (!name || typeof flags.prefix !== 'string') return fail('usage: qwirq work-type define <name> --prefix <P> --states a,b,c [--initial a] [--transitions "a>b,b>c"] [--parents t1,t2|--no-parent] [--ext] [--required f1,f2]')
-        const states = String(flags.states || '').split(',').map((s) => s.trim()).filter(Boolean)
-        if (!states.length) return fail('--states is required (comma-separated, e.g. open,closed)')
-        const initialState = typeof flags.initial === 'string' ? flags.initial : states[0]
-        const transitions = {}
-        for (const pair of String(flags.transitions || '').split(',').map((s) => s.trim()).filter(Boolean)) {
-          const [from, to] = pair.split('>').map((s) => s.trim())
-          if (!from || !to) return fail(`bad --transitions entry "${pair}" (expected from>to)`)
-          ;(transitions[from] ||= []).push(to)
-        }
-        const requiredFields = String(flags.required || '').split(',').map((s) => s.trim()).filter(Boolean)
-        const allowedParentTypes = flags['no-parent']
-          ? []
-          : (typeof flags.parents === 'string' ? flags.parents.split(',').map((s) => s.trim()).filter(Boolean) : null)
-        const policy = { initialState, states, transitions, allowedParentTypes, requiredFields, hasExtension: !!flags.ext }
+        if (!name || typeof flags.prefix !== 'string') return fail('usage: qwirq work-type define <name> --prefix <P> --states a,b,c [--initial a] [--transitions "a>b,b>c"] [--parents t1,t2|--no-parent] [--require-parent] [--ext] [--required f1,f2] [--transition-rule "a>b:assignee,note,fields(x|y)"] [--field-type "points:numeric-enum(1|2|3)"]')
+        let policy
+        try { policy = buildPolicy(flags, {}, true) } catch (e) { return fail(e.message) }
         const { type } = await appCall('tasks', { op: 'type-define', env, name, prefix: flags.prefix, policy })
         out(`defined work-item type ${type.name} (prefix ${type.prefix}); states: ${type.policy.states.join(', ')}`)
+        return
+      }
+      if (sub === 'update') {
+        // F-009: pipelines are configuration, and configuration evolves. Fetch the current type, override
+        // only the keys whose flags are present, and send the merged patch (the lib enforces the safety
+        // contract: no occupied state may vanish). --prefix and/or any policy flag(s); at least one required.
+        if (!name) return fail('usage: qwirq work-type update <name> [--prefix P] [--states ...] [--initial s] [--transitions "a>b,b>c"] [--parents ...|--no-parent] [--require-parent|--no-require-parent] [--required f1,f2] [--ext|--no-ext] [--transition-rule "a>b:assignee" ...] [--field-type "k:enum(x|y)" ...]')
+        const { type: existing } = await appCall('tasks', { op: 'type-get', env, name })
+        if (!existing) return fail(`no such work-item type: ${name}`)
+        const patch = {}
+        if (typeof flags.prefix === 'string') patch.prefix = flags.prefix
+        const policyFlags = ['states', 'initial', 'transitions', 'parents', 'no-parent', 'required', 'ext', 'no-ext', 'require-parent', 'no-require-parent', 'transition-rule', 'field-type']
+        if (policyFlags.some((f) => flags[f] !== undefined)) {
+          try { patch.policy = buildPolicy(flags, existing.policy, false) } catch (e) { return fail(e.message) }
+        }
+        if (patch.prefix === undefined && patch.policy === undefined) return fail('nothing to change (pass --prefix and/or a policy flag)')
+        const { type } = await appCall('tasks', { op: 'type-update', env, name, ...patch })
+        out(`updated work-item type ${type.name}.`)
         return
       }
       if (sub === 'ls') {
@@ -977,8 +1093,21 @@ async function main() {
         const tr = Object.entries(type.policy.transitions)
         out(`  transitions:${tr.length ? '' : ' (none — all states terminal)'}`)
         for (const [from, tos] of tr) out(`    ${from} -> ${tos.join(', ')}`)
-        out(`  parents:    ${type.policy.allowedParentTypes === null ? 'any' : (type.policy.allowedParentTypes.length ? type.policy.allowedParentTypes.join(', ') : 'none (root only)')}`)
+        out(`  parents:    ${type.policy.allowedParentTypes === null ? 'any' : (type.policy.allowedParentTypes.length ? type.policy.allowedParentTypes.join(', ') : 'none (root only)')}${type.policy.requireParent ? ' (required)' : ''}`)
         out(`  extension:  ${type.policy.hasExtension ? `yes${type.policy.requiredFields.length ? ` (required: ${type.policy.requiredFields.join(', ')})` : ''}` : 'no'}`)
+        const rules = Object.entries(type.policy.transitionRules || {})
+        if (rules.length) {
+          out('  rules:')
+          for (const [edge, r] of rules) {
+            const gates = [r.requireNote && 'note', r.requireAssignee && 'assignee', r.requireWeave && 'weave', r.requireFields?.length && `fields(${r.requireFields.join('|')})`].filter(Boolean)
+            out(`    ${edge}: ${gates.join(', ')}`)
+          }
+        }
+        const fts = Object.entries(type.policy.fieldTypes || {})
+        if (fts.length) {
+          out('  field types:')
+          for (const [fn, ft] of fts) out(`    ${fn}: ${ft.kind}${ft.values ? `(${ft.values.join('|')})` : ''}`)
+        }
         return
       }
       if (sub === 'rm') {
@@ -987,7 +1116,65 @@ async function main() {
         out(`removed work-item type ${name}.`)
         return
       }
-      return fail('usage: qwirq work-type <define|ls|show|rm>')
+      return fail('usage: qwirq work-type <define|update|ls|show|rm>')
+    }
+
+    case 'link-type': {
+      // The OPTIONAL link-type registry (tasks 0.2.1, #124/FRICTION-7). Registering a link type CONSTRAINS
+      // its edges (allowed from/to item types, source states, cardinality); unregistered types stay opaque
+      // and unconstrained. Additive + default-off: with nothing registered every `work link` works as before.
+      const sub = positional[0]
+      const name = positional[1]
+      const env = typeof flags.env === 'string' ? flags.env : undefined
+      const fmtLinkType = (lt) => {
+        const bits = [
+          `from:${lt.fromTypes ? lt.fromTypes.join('|') : 'any'}`,
+          `to:${lt.toTypes ? lt.toTypes.join('|') : 'any'}`,
+          lt.fromStates ? `fromStates:${lt.fromStates.join('|')}` : null,
+          lt.maxFrom != null ? `maxFrom:${lt.maxFrom}` : null,
+          lt.maxTo != null ? `maxTo:${lt.maxTo}` : null,
+        ].filter(Boolean)
+        return `${lt.name}\t${bits.join('  ')}`
+      }
+      if (sub === 'define') {
+        if (!name) return fail('usage: qwirq link-type define <name> [--from-types a,b] [--to-types c,d] [--from-states s1,s2] [--max-from N] [--max-to N]')
+        const linkType = {
+          name,
+          fromTypes: typeof flags['from-types'] === 'string' ? csv(flags['from-types']) : null,
+          toTypes: typeof flags['to-types'] === 'string' ? csv(flags['to-types']) : null,
+          fromStates: typeof flags['from-states'] === 'string' ? csv(flags['from-states']) : null,
+          maxFrom: flags['max-from'] !== undefined && flags['max-from'] !== true ? Number(flags['max-from']) : null,
+          maxTo: flags['max-to'] !== undefined && flags['max-to'] !== true ? Number(flags['max-to']) : null,
+        }
+        await appCall('tasks', { op: 'link-type-define', env, linkType })
+        out(`registered link type "${name}". Edges of this type are now constrained (work link throws link_not_allowed on a violation).`)
+        return
+      }
+      if (sub === 'ls') {
+        const { linkTypes } = await appCall('tasks', { op: 'link-type-ls', env })
+        if (!linkTypes.length) { out('(no registered link types — every link type is opaque/unconstrained)'); return }
+        for (const lt of linkTypes) out(fmtLinkType(lt))
+        return
+      }
+      if (sub === 'show') {
+        if (!name) return fail('usage: qwirq link-type show <name>')
+        const { linkType } = await appCall('tasks', { op: 'link-type-get', env, name })
+        if (!linkType) { out(`(${name} is not registered — it stays opaque and unconstrained)`); return }
+        out(`${linkType.name}`)
+        out(`  from types:  ${linkType.fromTypes ? linkType.fromTypes.join(', ') : 'any'}`)
+        out(`  to types:    ${linkType.toTypes ? linkType.toTypes.join(', ') : 'any'}`)
+        out(`  from states: ${linkType.fromStates ? linkType.fromStates.join(', ') : 'any'}`)
+        out(`  max from:    ${linkType.maxFrom != null ? linkType.maxFrom : 'unlimited'}`)
+        out(`  max to:      ${linkType.maxTo != null ? linkType.maxTo : 'unlimited'}`)
+        return
+      }
+      if (sub === 'rm') {
+        if (!name) return fail('usage: qwirq link-type rm <name>')
+        await appCall('tasks', { op: 'link-type-rm', env, name })
+        out(`removed link type "${name}" (its edges are opaque/unconstrained again).`)
+        return
+      }
+      return fail('usage: qwirq link-type <define|ls|show|rm>')
     }
 
     case 'work': {
@@ -1030,7 +1217,7 @@ async function main() {
         const { cis } = await appCall('tasks', { op: 'cis', env, ref })
         for (const c of cis) out(`  ci:     ${c.rel} ${c.ciId}`)
         const { events } = await appCall('tasks', { op: 'events', env, ref })
-        for (const e of events.slice(-5)) out(`  · ${e.at}  ${e.kind}${e.fromState ? ` ${e.fromState}->${e.toState}` : e.toState ? ` ${e.toState}` : ''}${e.actor ? `  by ${e.actor}` : ''}`)
+        for (const e of events.slice(-5)) out(`  · ${e.at}  ${e.kind}${e.fromState ? ` ${e.fromState}->${e.toState}` : e.toState ? ` ${e.toState}` : ''}${e.actor ? `  by ${e.actor}` : ''}${e.note ? ` — "${e.note}"` : ''}`)
         return
       }
       if (sub === 'new') {
@@ -1130,6 +1317,20 @@ async function main() {
         out(`defined CI type ${type.name} (prefix ${type.prefix}).`)
         return
       }
+      if (sub === 'update') {
+        // cmdb 0.2.0 updateType: change the prefix and/or merge attribute-schema keys (additive). #124.
+        if (!name) return fail('usage: qwirq ci-type update <name> [--prefix P] [--attr k=type ...]')
+        const { type: existing } = await appCall('cmdb', { op: 'type-get', env, name })
+        if (!existing) return fail(`no such CI type: ${name}`)
+        const patch = {}
+        if (typeof flags.prefix === 'string') patch.prefix = flags.prefix
+        const attrs = parseKeyVals(flags.attr)
+        if (Object.keys(attrs).length) patch.attributeSchema = { ...existing.attributeSchema, ...attrs }
+        if (patch.prefix === undefined && patch.attributeSchema === undefined) return fail('nothing to change (pass --prefix and/or --attr k=type)')
+        const { type } = await appCall('cmdb', { op: 'type-update', env, name, ...patch })
+        out(`updated CI type ${type.name}.`)
+        return
+      }
       if (sub === 'ls') {
         const { types } = await appCall('cmdb', { op: 'type-ls', env })
         if (!types.length) { out('(no CI types — run: qwirq ci init, then qwirq ci-type define …)'); return }
@@ -1150,7 +1351,7 @@ async function main() {
         out(`removed CI type ${name}.`)
         return
       }
-      return fail('usage: qwirq ci-type <define|ls|show|rm>')
+      return fail('usage: qwirq ci-type <define|update|ls|show|rm>')
     }
 
     case 'ci': {
