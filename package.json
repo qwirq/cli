@@ -1,6 +1,6 @@
 {
   "name": "@qwirq/cli",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "type": "module",
   "bin": {
     "qwirq": "bin/qwirq.mjs"
@@ -8,7 +8,6 @@
   "files": [
     "bin",
     "src",
-    "schemas",
     "templates"
   ],
   "engines": {
@@ -24,6 +23,7 @@
     "verify:agents-cli": "node scripts/verify-agents-cli.mjs"
   },
   "dependencies": {
+    "@qwirq/manifest": "^0.3.0",
     "yaml": "^2.4.5"
   },
   "publishConfig": {
