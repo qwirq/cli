@@ -44,3 +44,29 @@ export async function apiFetch(method, path, { body, auth = true } = {}) {
 export function appCall(lib, body) {
   return apiFetch('POST', `/api/v1/data/${lib}`, { body })
 }
+
+// Like apiFetch, but against the AUTH host (authBase) — for surfaces auth owns (token/agent management,
+// #115). Surfaces the server's own error message verbatim (auth replies `{ error }`), since these
+// endpoints return specific, actionable messages (e.g. "only an owner can mint a token for an agent").
+export async function authFetch(method, path, { body, auth = true } = {}) {
+  const cfg = loadConfig()
+  const token = auth ? readToken() : null
+  if (auth && !token) throw new Error('Not signed in. Run: qwirq login')
+  const headers = {}
+  if (auth) headers.Authorization = `Bearer ${token}`
+  if (body !== undefined) headers['content-type'] = 'application/json'
+
+  const url = cfg.authBase + path
+  let res
+  try {
+    res = await fetch(url, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined })
+  } catch (e) {
+    throw new Error(`could not reach QWIRQ auth at ${url} (${e?.cause?.code || e?.code || e?.message || 'fetch failed'}). Check your connection, or the authBase endpoint (QWIRQ_AUTH_URL / ~/.qwirq/config.json).`)
+  }
+  const data = await res.json().catch(() => null)
+  if (!res.ok) {
+    if (res.status === 401) throw new Error('Not signed in or token expired. Run: qwirq login')
+    throw new Error(data?.error || data?.message || `request failed (${res.status})`)
+  }
+  return data
+}
