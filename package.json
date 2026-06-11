@@ -1,6 +1,6 @@
 {
   "name": "@qwirq/cli",
-  "version": "0.6.0",
+  "version": "0.8.0",
   "type": "module",
   "bin": {
     "qwirq": "bin/qwirq.mjs"
@@ -19,7 +19,9 @@
     "verify": "node scripts/verify.mjs",
     "verify:robustness": "node scripts/verify-robustness.mjs",
     "verify:secrets-cat": "node scripts/verify-secrets-cat.mjs",
-    "verify:tokens-cli": "node scripts/verify-tokens-cli.mjs"
+    "verify:tokens-cli": "node scripts/verify-tokens-cli.mjs",
+    "verify:tasks02-cli": "node scripts/verify-tasks02-cli.mjs",
+    "verify:agents-cli": "node scripts/verify-agents-cli.mjs"
   },
   "dependencies": {
     "yaml": "^2.4.5"
