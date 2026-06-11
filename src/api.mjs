@@ -2,6 +2,30 @@
 // readable CLI errors.
 import { loadConfig, readToken } from './config.mjs'
 
+// Turn a non-2xx response into a readable, consistently-shaped Error (#147 / FRICTION-15). The key
+// case: a 5xx is a SERVER-side internal fault, never the user's input; surface it as a clearly NAMED
+// error ("…internal error… this is a platform-side bug, not your input") with a stable `code`, instead
+// of a bare token like "server_error" that reads like benign output and tells the user nothing. The
+// throw always propagates to the top-level handler, which sets a non-zero exit, so `set -e` scripts
+// stop. `host` distinguishes the api vs the auth surface in the message.
+export function httpError(status, data, { host = 'the QWIRQ server' } = {}) {
+  if (status === 401) return Object.assign(new Error('Not signed in or token expired. Run: qwirq login'), { status })
+  if (status === 403) return Object.assign(new Error("You don't have permission for that in this company."), { status })
+  if (status === 404) return Object.assign(new Error(`Not found${data?.resource ? `: ${data.resource}` : ''}.`), { status })
+  if (status >= 500) {
+    const detail = data?.message || data?.error || `HTTP ${status}`
+    return Object.assign(
+      new Error(`${host} hit an internal error handling this request (${detail}). This is a platform-side bug, not your input; please report it.`),
+      { code: data?.code || (typeof data?.error === 'string' ? data.error : 'server_error'), status },
+    )
+  }
+  // 4xx domain error: prefer the human `message` (api) or the verbatim `error` text (auth). Carry a
+  // stable `code` so verbs can branch on it — the explicit `code` (TasksError/CmdbError) wins, else the
+  // envelope's `error` family (bad_request, not_found, …).
+  const code = data?.code || (typeof data?.error === 'string' ? data.error : undefined)
+  return Object.assign(new Error(data?.message || data?.error || `request failed (${status})`), code ? { code, status } : { status })
+}
+
 export async function apiFetch(method, path, { body, auth = true } = {}) {
   const cfg = loadConfig()
   const token = auth ? readToken() : null
@@ -26,16 +50,7 @@ export async function apiFetch(method, path, { body, auth = true } = {}) {
     throw new Error(`could not reach the QWIRQ API at ${url} (${e?.cause?.code || e?.code || e?.message || 'fetch failed'}). Check your connection, or the apiBase endpoint (QWIRQ_API_URL / ~/.qwirq/config.json).`)
   }
   const data = await res.json().catch(() => null)
-  if (!res.ok) {
-    if (res.status === 401) throw new Error('Not signed in or token expired. Run: qwirq login')
-    if (res.status === 403) throw new Error("You don't have permission for that in this company.")
-    if (res.status === 404) throw new Error(`Not found${data?.resource ? `: ${data.resource}` : ''}.`)
-    const e = new Error(data?.message || data?.error || `request failed (${res.status})`)
-    // Domain errors from the app-plane libs (TasksError/CmdbError) carry a stable `code` the verbs
-    // can branch on (e.g. bad_transition, not_found, type_exists); pass it through on the thrown error.
-    if (data?.code) e.code = data.code
-    throw e
-  }
+  if (!res.ok) throw httpError(res.status, data)
   return data
 }
 
@@ -64,9 +79,6 @@ export async function authFetch(method, path, { body, auth = true } = {}) {
     throw new Error(`could not reach QWIRQ auth at ${url} (${e?.cause?.code || e?.code || e?.message || 'fetch failed'}). Check your connection, or the authBase endpoint (QWIRQ_AUTH_URL / ~/.qwirq/config.json).`)
   }
   const data = await res.json().catch(() => null)
-  if (!res.ok) {
-    if (res.status === 401) throw new Error('Not signed in or token expired. Run: qwirq login')
-    throw new Error(data?.error || data?.message || `request failed (${res.status})`)
-  }
+  if (!res.ok) throw httpError(res.status, data, { host: 'QWIRQ auth' })
   return data
 }
