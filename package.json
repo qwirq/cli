@@ -1,6 +1,6 @@
 {
   "name": "@qwirq/cli",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "type": "module",
   "bin": {
     "qwirq": "bin/qwirq.mjs"
@@ -8,7 +8,8 @@
   "files": [
     "bin",
     "src",
-    "templates"
+    "templates",
+    "vendor"
   ],
   "engines": {
     "node": ">=18"
@@ -25,7 +26,6 @@
     "verify:identity-guard": "node scripts/verify-identity-guard.mjs"
   },
   "dependencies": {
-    "@qwirq/manifest": "^0.3.0",
     "yaml": "^2.4.5"
   },
   "publishConfig": {
