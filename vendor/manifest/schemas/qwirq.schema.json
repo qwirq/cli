@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qwirq.com/schemas/qwirq.schema.json",
+  "title": "qwirq.yaml",
+  "description": "QWIRQ project manifest: how a project presents and runs on QWIRQ. The build pipeline (P0-c) parses this into a registry AppManifest + runner entries; VS Code validates against it (DX-5). See DEV-EXPERIENCE-PLAN.md sections 3 and 6.",
+  "type": "object",
+  "required": ["id", "name", "provides"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$",
+      "description": "Stable app id within the instance (kebab-case). Becomes AppManifest.id / instance_apps.app_id."
+    },
+    "name": { "type": "string", "minLength": 1, "description": "Display name in the shell." },
+    "icon": { "type": "string", "description": "Icon key the shell maps to an icon component." },
+    "nav": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Where the app mounts in the shell nav. Omit to use defaults.",
+      "properties": {
+        "section": { "type": "string", "description": "Nav grouping, e.g. 'apps'." },
+        "order": { "type": "integer", "description": "Nav order, low to high (AppManifest.order)." },
+        "hidden": { "type": "boolean", "description": "Registered + mountable but not shown in the sidebar (AppManifest.nav=false)." }
+      }
+    },
+    "requires": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "resourceType"],
+      "description": "PDP gate (AppManifest.requires); omitted = always visible. Evaluated server-side per user.",
+      "properties": {
+        "action": { "type": "string" },
+        "resourceType": { "type": "string" }
+      }
+    },
+    "provides": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "description": "The capabilities this project provides (at least one). A project can provide several.",
+      "properties": {
+        "app": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["entry"],
+          "description": "A UI surface mounted in the shell. React, built against the instance-pinned React (Module Federation remote).",
+          "properties": {
+            "entry": { "type": "string", "description": "Path to the app entry module, e.g. src/app/index.tsx." }
+          }
+        },
+        "functions": {
+          "type": "array",
+          "description": "Server functions: backend logic run in the in-instance runner, served at POST /api/apps/{id}/fn/{name} (contract v1; see the 'Server functions' article in the knowledge base).",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "entry"],
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[a-zA-Z][a-zA-Z0-9_-]*$",
+                "description": "Stable function identifier within the app; part of the invocation URL."
+              },
+              "entry": { "type": "string", "description": "Path to the handler module (default-exports async (ctx, input) => json)." },
+              "http": { "type": "string", "description": "Reserved: REST-style alias, e.g. 'POST /assign'. Accepted now; alias routing is a fast-follow. The canonical /fn/{name} route always works." },
+              "tool": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["description"],
+                "description": "Declare this function as a Mabel tool (F-010). Calls arrive as actor 'mabel' on behalf of an authenticated user; authorization evaluates as that user. Declaration is v1-stable; Mabel execution is a fast-follow.",
+                "properties": {
+                  "description": { "type": "string", "minLength": 1, "description": "What the tool does, written for the assistant." },
+                  "parameters": { "type": "object", "description": "JSON Schema for the tool's input (also documents the function's input shape)." }
+                }
+              },
+              "secrets": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Vault secret NAMES this function may read at runtime via ctx.secrets.get(name). Declared-only: the function reads exactly these, resolved AS THE INVOKING USER (only the user's own grants apply — never blanket vault access). An undeclared name throws before any DB call. Omit = the function reads no secrets."
+              }
+            }
+          }
+        },
+        "jobs": {
+          "type": "array",
+          "description": "Scheduled or triggered runs (the runner model).",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "entry"],
+            "properties": {
+              "name": { "type": "string" },
+              "entry": { "type": "string" },
+              "schedule": { "type": "string", "description": "Cron expression for scheduled runs, e.g. '0 2 * * *'." }
+            }
+          }
+        }
+      }
+    },
+    "data": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "App data-plane configuration.",
+      "properties": {
+        "migrations": { "type": "string", "description": "Path to the migrations directory (fed to `qwirq data migrate`)." }
+      }
+    },
+    "runtime": {
+      "type": "string",
+      "enum": ["node20"],
+      "default": "node20",
+      "description": "Backend runtime host. P0 supports node20; python and rust are a fast-follow (DX-8) and will extend this enum. UI is always React/TS regardless."
+    },
+    "platform": {
+      "type": "string",
+      "pattern": "^[0-9]{4}\\.[0-9]{2}$",
+      "description": "The instance platform release this builds against (pins React + the SDK), e.g. '2026.06'."
+    }
+  }
+}
