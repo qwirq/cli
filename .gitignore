@@ -3,3 +3,6 @@
 .env.*
 !.env.example
 *.log
+
+# npm pack artifacts
+*.tgz
