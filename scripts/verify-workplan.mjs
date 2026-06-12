@@ -13,11 +13,19 @@ const API = 'http://localhost:5000'
 const HOME = mkdtempSync(join(tmpdir(), 'qwirq-cli-wp-'))
 const TAG = 'v' + Date.now().toString(36).slice(-5) // unique, short suffix per run
 
+// Dev-login creds for the device-flow approval. No baked secret: take QWIRQ_DEV_LOGIN_* from the env
+// if set, else read apps/auth/.env.local (the local dev source of truth), else fail loudly. The repo is
+// public, so nothing personal or secret is hardcoded here.
 function devCreds() {
-  const get = (k, d) => {
-    try { const l = readFileSync('../auth/.env.local', 'utf8').split(/\r?\n/).find((x) => x.startsWith(k + '=')); return l ? l.slice(k.length + 1) : d } catch { return d }
+  let env = ''
+  try { env = readFileSync('../auth/.env.local', 'utf8') } catch { /* fall through to env vars / error */ }
+  const get = (k) => { const l = env.split(/\r?\n/).find((x) => x.startsWith(k + '=')); return l ? l.slice(k.length + 1) : undefined }
+  const email = process.env.QWIRQ_DEV_LOGIN_EMAIL || get('NEXT_PUBLIC_DEV_LOGIN_EMAIL')
+  const password = process.env.QWIRQ_DEV_LOGIN_PASSWORD || get('NEXT_PUBLIC_DEV_LOGIN_PASSWORD')
+  if (!email || !password) {
+    throw new Error('dev-login creds missing: set QWIRQ_DEV_LOGIN_EMAIL + QWIRQ_DEV_LOGIN_PASSWORD, or run from apps/cli with ../auth/.env.local providing NEXT_PUBLIC_DEV_LOGIN_EMAIL + NEXT_PUBLIC_DEV_LOGIN_PASSWORD')
   }
-  return { email: get('NEXT_PUBLIC_DEV_LOGIN_EMAIL', 'njgskc@gmail.com'), password: get('NEXT_PUBLIC_DEV_LOGIN_PASSWORD', 'qwirq-temp-7r9k') }
+  return { email, password }
 }
 
 const baseEnv = () => ({ ...process.env, QWIRQ_HOME: HOME, QWIRQ_API_URL: API, QWIRQ_AUTH_URL: AUTH })
