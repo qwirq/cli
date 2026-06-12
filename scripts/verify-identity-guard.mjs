@@ -47,9 +47,9 @@ let r = await run(['work', 'new', '--type', 'story', '--title', 'X', '--as', 'cl
 check('--as matching the session proceeds (the write happens)', r.code === 0 && tasksPosts() === before + 1, `exit=${r.code} stderr=${r.stderr}`)
 check('--as match prints the acting-identity confirmation', /acting as claude@qwirq\.com/.test(r.stderr), r.stderr)
 
-// 2. --as MISMATCH → refuse: exit 1, NO write.
+// 2. --as MISMATCH → refuse: exit 1, NO write. (Any email != the mocked session identity; a fake one.)
 before = tasksPosts()
-r = await run(['work', 'new', '--type', 'story', '--title', 'X', '--as', '***REMOVED***'])
+r = await run(['work', 'new', '--type', 'story', '--title', 'X', '--as', 'someone-else@example.com'])
 check('--as mismatch exits non-zero', r.code === 1, `exit=${r.code}`)
 check('--as mismatch does NOT perform the write', tasksPosts() === before, `posts delta=${tasksPosts() - before}`)
 check('--as mismatch explains the refusal + the actual identity', /Refusing/.test(r.stderr) && /claude@qwirq\.com/.test(r.stderr), r.stderr)
