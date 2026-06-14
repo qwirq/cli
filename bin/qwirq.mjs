@@ -182,6 +182,14 @@ Endpoints default to production (auth/api/git .qwirq.com) and can be overridden 
 ~/.qwirq/config.json (keys authBase/apiBase/gitBase) or per-command via QWIRQ_AUTH_URL,
 QWIRQ_API_URL, QWIRQ_GIT_URL. \`qwirq logout\` clears your login but keeps those overrides.
 
+Agent auth and profile isolation:
+  QWIRQ_TOKEN=<PAT>    use this PAT for every command, before any stored token/keychain lookup.
+                       This is the stateless path for agents and CI that already hold a PAT.
+  QWIRQ_HOME=<dir>     use <dir> instead of ~/.qwirq for config and the OS credential store.
+                       Use one QWIRQ_HOME per agent/profile so owner and builder sessions never
+                       collide. The git credential-helper and every qwirq command read the same
+                       scoped token, so git pushes follow the selected profile too.
+
 Exit codes (stable, for scripts): 0 success; 1 any error (a message is printed to stderr).
 A \`dev\`/\`types\` run exits with the underlying npm script's code.`
 
