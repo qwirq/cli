@@ -1,5 +1,7 @@
 // `qwirq login`: the OAuth 2.0 Device Authorization Grant from the client side. Ask auth for a
 // code, send the user to the browser to approve, poll until the PAT comes back, store it.
+// `qwirq login --token <PAT>`: non-interactive path for agents/CI — writes the PAT directly into
+// the (QWIRQ_HOME-scoped) credential store without a browser or network round-trip.
 import { loadConfig, saveConfig, writeToken } from './config.mjs'
 import { out, err, openBrowser } from './util.mjs'
 
@@ -59,4 +61,16 @@ export async function login({ noBrowser = false } = {}) {
     }
   }
   throw new Error('timed out waiting for approval')
+}
+
+// Non-interactive PAT write: store `pat` in the (QWIRQ_HOME-scoped) credential store. Used by
+// `qwirq login --token <PAT>` so agents and CI runners can authenticate without a device flow.
+// QWIRQ_HOME isolates this store from the default ~/.qwirq, so an agent and the owner can
+// coexist on the same machine with zero token collision.
+export async function loginWithToken(pat) {
+  if (!pat || !pat.trim()) throw new Error('--token: PAT value is empty')
+  const backend = writeToken(pat.trim())
+  if (backend) out(`  Token stored in the ${backend}.`)
+  else err('  Note: no OS keychain available — token saved to config file (0600).')
+  out('  Run `qwirq whoami` to confirm the active identity.')
 }

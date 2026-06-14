@@ -5,7 +5,7 @@ import { readdirSync, readFileSync, writeFileSync, mkdirSync, existsSync } from 
 import { join, resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { apiFetch, appCall, authFetch } from '../src/api.mjs'
-import { login } from '../src/login.mjs'
+import { login, loginWithToken } from '../src/login.mjs'
 import { loadConfig, clearConfig, readToken } from '../src/config.mjs'
 import { parseArgs, asList, parseKeyVals, out, err, fail, readStdin, promptHidden, promptYesNo, copyToClipboard, editInEditor } from '../src/util.mjs'
 import { parseManifestText, validateManifest, writeLocalSchema, ensureModeline, LOCAL_SCHEMA_REL, SCHEMA_URL } from '../src/manifest.mjs'
@@ -42,7 +42,8 @@ async function resolveDevDbUrl(flags) {
 
 const HELP = `qwirq — Knowledge (Texere) + Secrets from the terminal
 
-  qwirq login [--no-browser]        sign in (device flow)
+  qwirq login [--no-browser]        sign in (device flow — opens a browser)
+  qwirq login --token <PAT>         store a PAT directly (no browser; pass - to read from stdin)
   qwirq logout                      forget the stored token
   qwirq whoami                      show user + active company
 
@@ -106,6 +107,9 @@ const HELP = `qwirq — Knowledge (Texere) + Secrets from the terminal
                                     old registration live. Use this to remove the orphan, or add
                                     renamedFrom: <old-id> to qwirq.yaml and push (auto-prunes on push).
   qwirq app rename <old-id> <new-id>   rename an app registration (old URL stops resolving)
+
+  qwirq release ls                  list all project releases with their current state
+  qwirq release status <project>    show the latest release state, log tail, and entry URL for a project
 
   qwirq repo ls                     list repositories you can access
   qwirq repo new <slug> [--name <t>]   create a repository (private git repo)
@@ -188,6 +192,18 @@ const HELP = `qwirq — Knowledge (Texere) + Secrets from the terminal
 Endpoints default to production (auth/api/git .qwirq.com) and can be overridden in
 ~/.qwirq/config.json (keys authBase/apiBase/gitBase) or per-command via QWIRQ_AUTH_URL,
 QWIRQ_API_URL, QWIRQ_GIT_URL. \`qwirq logout\` clears your login but keeps those overrides.
+
+Agent / non-interactive auth:
+  QWIRQ_TOKEN=<PAT>    use this PAT for every command, bypassing the keychain entirely.
+                        Fastest path for CI scripts and agent runners (no login step needed).
+  QWIRQ_HOME=<dir>     use <dir> instead of ~/.qwirq for the config file and credential store.
+                        Isolates one identity from another on a shared machine (e.g.
+                        QWIRQ_HOME=~/.qwirq-agent keeps an agent session completely separate
+                        from the owner's ~/.qwirq). The git credential-helper and every other
+                        command all respect this path automatically.
+  \`qwirq login --token <PAT>\` (or \`--token -\` to read from stdin) writes the PAT into the
+  (QWIRQ_HOME-scoped) store so it persists across invocations without keeping the raw value in
+  the environment. Combine with QWIRQ_HOME for durable, isolated agent sessions.
 
 Exit codes (stable, for scripts): 0 success; 1 any error (a message is printed to stderr).
 A \`dev\`/\`types\` run exits with the underlying npm script's code.`
@@ -373,7 +389,15 @@ async function main() {
   }
 
   switch (group) {
-    case 'login': return login({ noBrowser: !!flags['no-browser'] })
+    case 'login': {
+      const rawToken = flags.token
+      if (rawToken !== undefined && rawToken !== true) {
+        const pat = rawToken === '-' ? (await readStdin()).trim() : String(rawToken)
+        return loginWithToken(pat)
+      }
+      if (rawToken === true) return fail('--token requires a value (PAT string or - for stdin)')
+      return login({ noBrowser: !!flags['no-browser'] })
+    }
 
     case 'logout': { clearConfig(); out('Signed out.'); return }
 
@@ -438,6 +462,43 @@ async function main() {
         return
       }
       return fail('usage: qwirq app <ls|rm|rename>')
+    }
+
+    case 'release': {
+      // Release observability (#169 / #158): `qwirq release ls` lists all project releases;
+      // `qwirq release status <project>` shows the latest state + log tail for one project.
+      // The pipeline (git push → build → register/notify) upserts a project_releases row so this
+      // verb can answer "queued/building/succeeded/failed" without requiring the builder to poll
+      // the live page or hard-refresh to distinguish a queued release from a live one.
+      const sub = positional[0]
+      if (sub === 'ls') {
+        const { releases } = await apiFetch('GET', '/api/v1/releases')
+        if (!releases.length) { out('(no releases recorded yet — push to a project repo first)'); return }
+        const STATUS_ICON = { succeeded: '✓', failed: '✗', building: '⟳', queued: '·' }
+        for (const r of releases) {
+          const icon = STATUS_ICON[r.status] ?? '?'
+          const age = r.updatedAt ? new Date(r.updatedAt).toISOString().slice(0, 16).replace('T', ' ') : ''
+          out(`${icon} ${r.status.padEnd(9)} ${r.projectSlug}${r.version ? `  v${r.version}` : ''}  ${age}`)
+        }
+        return
+      }
+      if (sub === 'status') {
+        const slug = positional[1]
+        if (!slug) return fail('usage: qwirq release status <project>')
+        const { release } = await apiFetch('GET', `/api/v1/releases/${encodeURIComponent(slug)}`)
+        const STATUS_ICON = { succeeded: '✓', failed: '✗', building: '⟳', queued: '·' }
+        const icon = STATUS_ICON[release.status] ?? '?'
+        out(`${icon} ${release.status}  ${release.projectSlug}${release.version ? `  v${release.version}` : ''}`)
+        if (release.ref) out(`  ref:       ${release.ref}`)
+        if (release.entry) out(`  entry:     ${release.entry}`)
+        if (release.statusUrl) out(`  status:    ${release.statusUrl}`)
+        if (release.startedAt) out(`  started:   ${new Date(release.startedAt).toISOString().slice(0, 19).replace('T', ' ')}`)
+        if (release.finishedAt) out(`  finished:  ${new Date(release.finishedAt).toISOString().slice(0, 19).replace('T', ' ')}`)
+        if (release.error) { out(''); out('  error:'); for (const l of release.error.split('\n').slice(0, 20)) out(`    ${l}`) }
+        if (release.logTail) { out(''); out('  log tail:'); for (const l of release.logTail.split('\n').slice(-20)) out(`    ${l}`) }
+        return
+      }
+      return fail('usage: qwirq release <ls|status <project>>')
     }
 
     case 'repo':
