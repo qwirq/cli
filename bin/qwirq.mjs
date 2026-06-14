@@ -312,7 +312,9 @@ const WP_CONFIG = {
     policy: {
       states: ['open', 'in-progress', 'in-review', 'done', 'cancelled'], initialState: 'open',
       transitions: { open: ['in-progress', 'cancelled'], 'in-progress': ['in-review', 'cancelled'], 'in-review': ['done', 'in-progress'] },
-      allowedParentTypes: ['epic', 'project'], requireParent: true, requiredFields: [], hasExtension: false,
+      // STRICT (#211, #366): story requires an EPIC parent — Project>Epic>Story chain enforced.
+      // Previously ['epic','project']; corrected per Nathan's ruling (board contribution #366).
+      allowedParentTypes: ['epic'], requireParent: true, requiredFields: [], hasExtension: true,
       transitionRules: { 'open>in-progress': { requireAssignee: true }, 'in-progress>in-review': { requireFields: ['points'] } },
       fieldTypes: { points: { kind: 'numeric-enum', values: [1, 2, 3, 5, 8, 13] } },
     },
@@ -322,7 +324,9 @@ const WP_CONFIG = {
     policy: {
       states: ['todo', 'doing', 'done', 'cancelled'], initialState: 'todo',
       transitions: { todo: ['doing', 'cancelled'], doing: ['done', 'cancelled', 'todo'] },
-      allowedParentTypes: ['story', 'epic'], requireParent: true, requiredFields: [], hasExtension: false,
+      // FLEXIBLE (#211): task attaches at project, epic, OR story — any work tier.
+      // Previously ['story','epic']; extended to include 'project' per Nathan's ruling.
+      allowedParentTypes: ['project', 'epic', 'story'], requireParent: true, requiredFields: [], hasExtension: false,
       transitionRules: { 'todo>doing': { requireAssignee: true } }, fieldTypes: {},
     },
   },
@@ -1501,6 +1505,9 @@ async function main() {
       if (sub === 'init') {
         const migrated = await appCall('tasks', { op: 'migrate', env })
         if (!json && migrated.applied.length) out(`created work-item tables (${migrated.applied.join(', ')}).`)
+        // Apply Workplan-owned waix_ tables (board #214). Must run after 'migrate' (work_items must exist).
+        const waixMigrated = await appCall('tasks', { op: 'waix-init', env })
+        if (!json && waixMigrated.applied.length) out(`created Workplan waix_ tables (${waixMigrated.applied.join(', ')}).`)
         const results = []
         for (const name of WP_TYPES) {
           const cfg = WP_CONFIG[name]
@@ -1515,7 +1522,7 @@ async function main() {
             if (!json) out(`  ${name} (${cfg.prefix}): defined`)
           }
         }
-        if (json) emitJson({ ok: true, results })
+        if (json) emitJson({ ok: true, results, waixApplied: waixMigrated.applied })
         else out('Workplan types ready.')
         return
       }
