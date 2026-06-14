@@ -22,6 +22,7 @@
     "verify:tokens-cli": "node scripts/verify-tokens-cli.mjs",
     "verify:tasks02-cli": "node scripts/verify-tasks02-cli.mjs",
     "verify:agents-cli": "node scripts/verify-agents-cli.mjs",
+    "verify:workplan-scrum": "node scripts/verify-workplan-scrum.mjs",
     "verify:error-path": "node scripts/verify-error-path.mjs",
     "verify:identity-guard": "node scripts/verify-identity-guard.mjs"
   },

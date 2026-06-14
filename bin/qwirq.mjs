@@ -155,6 +155,25 @@ const HELP = `qwirq — Knowledge (Texere) + Secrets from the terminal
 
   (work/ci verbs accept --env <e>; default prod. Run 'qwirq work init' / 'qwirq ci init' once first.)
 
+  qwirq workplan init [--env <e>]       install/update the six Workplan type policies (REQ/PRJ/EPC/STY/TSK/SPR); idempotent
+  qwirq workplan types [--env <e>]      show which Workplan types are installed and their state machines
+  qwirq workplan create <type> --title "..." [--parent <ref> | --project <p> | --epic <e> | --story <s>]
+                                        [--assignee a] [--priority n] [--due d] [--points n]
+                                        [--start <date> --end <date>] [--field k=v ...] [--json] [--env <e>]
+                                        create a Workplan item (type = request|project|epic|story|task|sprint)
+  qwirq workplan set <ref> [--title t] [--assignee a] [--priority n] [--due d] [--points n]
+                                        [--field k=v ...] [--json] [--env <e>]   edit fields on any Workplan item
+  qwirq workplan transition <ref> <state> [--note "..."] [--json] [--env <e>]   guarded state transition
+  qwirq workplan move <ref> (<parentRef> | --root) [--json] [--env <e>]   reparent a Workplan item
+  qwirq workplan link <from> <to> --type <t> [--remove] [--json] [--env <e>]   typed link between items
+  qwirq workplan sprint assign <storyRef> <sprintRef> [--remove] [--json] [--env <e>]   sprint membership
+  qwirq workplan ls [--type t] [--state s] [--assignee a] [--parent <ref>] [--roots] [--json] [--env <e>]
+  qwirq workplan show <ref> [--json] [--env <e>]   show a Workplan item with links and recent events
+
+  (Transitions are server-gated — owner required to start projects/stories/tasks; story points required
+   before in-review; terminal states: rejected/converted, done/cancelled, closed. Sprint assignment uses
+   'workplan sprint assign'. Type hierarchy: request, project -> epic -> story -> task, sprint.)
+
   Pass --as <email> to any authenticated command to ASSERT your identity: the CLI verifies the
   signed-in session resolves to that email and refuses (exit 1, no write) on a mismatch, so a script
   never mis-attributes a write to whoever happens to be logged in.
@@ -253,6 +272,69 @@ function buildPolicy(flags, base = {}, requireStates = false) {
     for (const f of fts) { const [n, ft] = parseFieldType(f); policy.fieldTypes[n] = ft }
   }
   return policy
+}
+
+// Canonical Workplan scrum-object type policies. Installed via `qwirq workplan init`; each maps to a
+// @qwirq/tasks type with a well-known prefix and state machine. Six types: Request (REQ, intake),
+// Project (PRJ), Epic (EPC), Story (STY, story points enforced), Task (TSK), Sprint (SPR).
+// These are TENANT CONFIGURATION (not baked into the platform) — the CLI installs them on demand.
+const WP_TYPES = ['request', 'project', 'epic', 'story', 'task', 'sprint']
+const WP_CONFIG = {
+  request: {
+    prefix: 'REQ',
+    policy: {
+      states: ['submitted', 'triaged', 'rejected', 'converted'], initialState: 'submitted',
+      transitions: { submitted: ['triaged'], triaged: ['rejected', 'converted'] },
+      allowedParentTypes: [], requireParent: false, requiredFields: [], hasExtension: true,
+      transitionRules: {}, fieldTypes: {},
+    },
+  },
+  project: {
+    prefix: 'PRJ',
+    policy: {
+      states: ['planning', 'active', 'on-hold', 'done', 'cancelled'], initialState: 'planning',
+      transitions: { planning: ['active', 'cancelled'], active: ['on-hold', 'done', 'cancelled'], 'on-hold': ['active', 'cancelled'] },
+      allowedParentTypes: [], requireParent: false, requiredFields: [], hasExtension: false,
+      transitionRules: { 'planning>active': { requireAssignee: true } }, fieldTypes: {},
+    },
+  },
+  epic: {
+    prefix: 'EPC',
+    policy: {
+      states: ['open', 'in-progress', 'done', 'cancelled'], initialState: 'open',
+      transitions: { open: ['in-progress', 'cancelled'], 'in-progress': ['done', 'cancelled'] },
+      allowedParentTypes: ['project'], requireParent: true, requiredFields: [], hasExtension: false,
+      transitionRules: {}, fieldTypes: {},
+    },
+  },
+  story: {
+    prefix: 'STY',
+    policy: {
+      states: ['open', 'in-progress', 'in-review', 'done', 'cancelled'], initialState: 'open',
+      transitions: { open: ['in-progress', 'cancelled'], 'in-progress': ['in-review', 'cancelled'], 'in-review': ['done', 'in-progress'] },
+      allowedParentTypes: ['epic', 'project'], requireParent: true, requiredFields: [], hasExtension: false,
+      transitionRules: { 'open>in-progress': { requireAssignee: true }, 'in-progress>in-review': { requireFields: ['points'] } },
+      fieldTypes: { points: { kind: 'numeric-enum', values: [1, 2, 3, 5, 8, 13] } },
+    },
+  },
+  task: {
+    prefix: 'TSK',
+    policy: {
+      states: ['todo', 'doing', 'done', 'cancelled'], initialState: 'todo',
+      transitions: { todo: ['doing', 'cancelled'], doing: ['done', 'cancelled', 'todo'] },
+      allowedParentTypes: ['story', 'epic'], requireParent: true, requiredFields: [], hasExtension: false,
+      transitionRules: { 'todo>doing': { requireAssignee: true } }, fieldTypes: {},
+    },
+  },
+  sprint: {
+    prefix: 'SPR',
+    policy: {
+      states: ['planning', 'active', 'closed', 'cancelled'], initialState: 'planning',
+      transitions: { planning: ['active', 'cancelled'], active: ['closed', 'cancelled'] },
+      allowedParentTypes: ['project'], requireParent: false, requiredFields: ['start', 'end'], hasExtension: true,
+      transitionRules: {}, fieldTypes: { start: { kind: 'date' }, end: { kind: 'date' } },
+    },
+  },
 }
 
 async function main() {
