@@ -100,6 +100,13 @@ const HELP = `qwirq — Knowledge (Texere) + Secrets from the terminal
   qwirq dev [--db <secret>]         run the project locally with a dev app DB bound (QWIRQ_DB_URL)
   qwirq types [--db <secret>]       generate .qwirq/schema.d.ts (typed bridge against your real schema)
 
+  qwirq app ls                      list registered apps for your instance
+  qwirq app rm <id> [--yes]         deregister an app from the instance registry (asks to confirm)
+                                    NOTE: changing manifest id on push registers a NEW app and leaves the
+                                    old registration live. Use this to remove the orphan, or add
+                                    renamedFrom: <old-id> to qwirq.yaml and push (auto-prunes on push).
+  qwirq app rename <old-id> <new-id>   rename an app registration (old URL stops resolving)
+
   qwirq repo ls                     list repositories you can access
   qwirq repo new <slug> [--name <t>]   create a repository (private git repo)
   qwirq repo rename <slug> [--slug <new>] [--name <t>]   rename a repository
@@ -401,6 +408,36 @@ async function main() {
       execFileSync('git', ['config', '--global', `credential.${base}.username`, 'qwirq'], { stdio: 'inherit' })
       out(`git will authenticate to ${base} with your qwirq login (run 'qwirq login' first).\nClone a project with: qwirq clone <project>`)
       return
+    }
+
+    case 'app': {
+      const sub = positional[0]
+      const id = positional[1]
+      if (sub === 'ls') {
+        const { apps } = await apiFetch('GET', '/api/v1/apps')
+        if (!apps.length) { out('(no registered apps)'); return }
+        for (const a of apps) out(`${a.appId}\t${a.source === 'builtin' ? '(builtin) ' : ''}${a.title}`)
+        return
+      }
+      if (sub === 'rm') {
+        if (!id) return fail('usage: qwirq app rm <id> [--yes]')
+        if (!flags.yes) {
+          const ok = await promptYesNo(`Deregister app "${id}"? The served artifact is not removed. [y/N] `)
+          if (ok === null) return fail('refusing to deregister in a non-interactive shell without --yes')
+          if (!ok) { out('Cancelled.'); return }
+        }
+        await apiFetch('DELETE', `/api/v1/apps/${encodeURIComponent(id)}`)
+        out(`Deregistered ${id}.`)
+        return
+      }
+      if (sub === 'rename') {
+        const newId = positional[2]
+        if (!id || !newId) return fail('usage: qwirq app rename <old-id> <new-id>')
+        await apiFetch('POST', `/api/v1/apps/${encodeURIComponent(id)}/rename`, { body: { newId } })
+        out(`Renamed ${id} → ${newId}.`)
+        return
+      }
+      return fail('usage: qwirq app <ls|rm|rename>')
     }
 
     case 'repo':
