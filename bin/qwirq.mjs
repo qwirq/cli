@@ -80,8 +80,9 @@ const HELP = `qwirq — Knowledge (Texere) + Secrets from the terminal
   qwirq token ls                    list your access tokens (status, scope, dates; never the value)
   qwirq token revoke <qid> [--yes]  revoke one of your tokens (takes effect immediately)
   qwirq agent ls                    list agent principals (owner only)
-  qwirq agent new <email> [--role builder|admin|...]   create an agent principal (no password; owner only)
+  qwirq agent new <email> [--role builder|owner]   create an agent principal (no password; owner only)
   qwirq agent suspend <email> [--yes]   suspend an agent — revokes ALL its tokens + disables it (owner only)
+  qwirq agent unsuspend <email>      unsuspend an agent principal (owner only)
   qwirq agent token <email> [--name <l>] [--scope <s>] [--expires <days> | --no-expiry]   mint a PAT for an agent (owner only)
   qwirq agent tokens <email>        list an agent's tokens (owner only)
   qwirq agent revoke <email> <qid> [--yes]   revoke an agent's token (owner only)
@@ -948,6 +949,7 @@ async function main() {
       // off a vaulted password. mintBody mirrors `token`.
       const sub = positional[0]
       const email = positional[1]
+      const agentRoles = new Set(['builder', 'owner'])
       const mintBody = (forEmail) => {
         const body = { forEmail }
         if (typeof flags.name === 'string') body.name = flags.name
@@ -969,9 +971,12 @@ async function main() {
       }
       if (sub === 'new') {
         // Create an agent principal (kind='agent', no password); mint its PAT separately via `agent token`.
-        if (!email) return fail('usage: qwirq agent new <email> [--role owner|admin|builder|member|viewer]')
+        if (!email) return fail('usage: qwirq agent new <email> [--role builder|owner]')
         const body = { email }
-        if (typeof flags.role === 'string') body.role = flags.role
+        if (flags.role !== undefined) {
+          if (typeof flags.role !== 'string' || !agentRoles.has(flags.role)) return fail('usage: qwirq agent new <email> [--role builder|owner]')
+          body.role = flags.role
+        }
         const { agent } = await authFetch('POST', '/api/agents', { body })
         out(`Created agent ${agent.email} (${agent.roleName}). Mint its token with: qwirq agent token ${agent.email} --scope web`)
         return
@@ -986,6 +991,12 @@ async function main() {
         }
         const r = await authFetch('POST', `/api/agents/${encodeURIComponent(email)}/suspend`)
         out(`Suspended agent ${r.email}. Revoked ${r.revoked} token${r.revoked === 1 ? '' : 's'}; it can no longer authenticate.`)
+        return
+      }
+      if (sub === 'unsuspend') {
+        if (!email) return fail('usage: qwirq agent unsuspend <email>')
+        const r = await authFetch('POST', `/api/agents/${encodeURIComponent(email)}/unsuspend`)
+        out(`Unsuspended agent ${r.email}. Mint a new token if it needs to authenticate.`)
         return
       }
       if (sub === 'token') {
@@ -1016,7 +1027,7 @@ async function main() {
         out(`Revoked agent ${email}'s token #${qid}.`)
         return
       }
-      return fail('usage: qwirq agent <ls|new|suspend|token|tokens|revoke>\n  new <email> [--role ...]   suspend <email> [--yes]   token <email> [--scope web] [--expires <days>|--no-expiry]')
+      return fail('usage: qwirq agent <ls|new|suspend|unsuspend|token|tokens|revoke>\n  new <email> [--role builder|owner]   suspend <email> [--yes]   unsuspend <email>   token <email> [--scope web] [--expires <days>|--no-expiry]')
     }
 
     case 'members': {
