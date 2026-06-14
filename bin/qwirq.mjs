@@ -111,6 +111,9 @@ const HELP = `qwirq — Knowledge (Texere) + Secrets from the terminal
   qwirq git setup                   let git authenticate to git.qwirq.com with your qwirq login
   qwirq clone <repo>                clone a repository over HTTPS (uses your login, no keys)
 
+  qwirq release ls                  list all project releases with their current state
+  qwirq release status <project>    show the latest release state, log tail, and entry URL for a project
+
   qwirq data status                 is there an app database for your company yet?
   qwirq data provision              create your company's isolated app database
   qwirq data tables [--env <e>]     list tables in your app database (default env: prod)
@@ -468,6 +471,42 @@ async function main() {
         return
       }
       return fail('usage: qwirq repo <ls|new|rename|rm|share|unshare|grants>')
+    }
+
+    case 'release': {
+      // Release observability (#169 / #158): `qwirq release ls` lists all project releases;
+      // `qwirq release status <project>` shows the latest state + log tail for one project.
+      // The pipeline (git push → build → register/notify) upserts a project_releases row so this
+      // verb can answer "queued/building/succeeded/failed" without requiring the builder to poll
+      // the live page or hard-refresh to distinguish a queued release from a live one.
+      const sub = positional[0]
+      const STATUS_ICON = { succeeded: '\u2713', failed: '\u2717', building: '\u27f3', queued: '\u00b7' }
+      if (sub === 'ls') {
+        const { releases } = await apiFetch('GET', '/api/v1/releases')
+        if (!releases.length) { out('(no releases recorded yet \u2014 push to a project repo first)'); return }
+        for (const r of releases) {
+          const icon = STATUS_ICON[r.status] ?? '?'
+          const age = r.updatedAt ? new Date(r.updatedAt).toISOString().slice(0, 16).replace('T', ' ') : ''
+          out(`${icon} ${r.status.padEnd(9)} ${r.projectSlug}${r.version ? `  v${r.version}` : ''}  ${age}`)
+        }
+        return
+      }
+      if (sub === 'status') {
+        const slug = positional[1]
+        if (!slug) return fail('usage: qwirq release status <project>')
+        const { release } = await apiFetch('GET', `/api/v1/releases/${encodeURIComponent(slug)}`)
+        const icon = STATUS_ICON[release.status] ?? '?'
+        out(`${icon} ${release.status}  ${release.projectSlug}${release.version ? `  v${release.version}` : ''}`)
+        if (release.ref) out(`  ref:       ${release.ref}`)
+        if (release.entry) out(`  entry:     ${release.entry}`)
+        if (release.statusUrl) out(`  status:    ${release.statusUrl}`)
+        if (release.startedAt) out(`  started:   ${new Date(release.startedAt).toISOString().slice(0, 19).replace('T', ' ')}`)
+        if (release.finishedAt) out(`  finished:  ${new Date(release.finishedAt).toISOString().slice(0, 19).replace('T', ' ')}`)
+        if (release.error) { out(''); out('  error:'); for (const l of release.error.split('\n').slice(0, 20)) out(`    ${l}`) }
+        if (release.logTail) { out(''); out('  log tail:'); for (const l of release.logTail.split('\n').slice(-20)) out(`    ${l}`) }
+        return
+      }
+      return fail('usage: qwirq release <ls|status <project>>')
     }
 
     case 'project': {
