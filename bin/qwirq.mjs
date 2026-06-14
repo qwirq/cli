@@ -100,15 +100,16 @@ const HELP = `qwirq — Knowledge (Texere) + Secrets from the terminal
   qwirq dev [--db <secret>]         run the project locally with a dev app DB bound (QWIRQ_DB_URL)
   qwirq types [--db <secret>]       generate .qwirq/schema.d.ts (typed bridge against your real schema)
 
-  qwirq project ls                  list projects (repos) you can access
-  qwirq project new <slug> [--name <t>]   create a project (private repo)
-  qwirq project rename <slug> [--slug <new>] [--name <t>]   rename a project
-  qwirq project rm <slug> [--yes]   delete a project (asks to confirm)
-  qwirq project share <slug> <email|role|group> [--role|--group] [--read|--manage|--own]
-  qwirq project unshare <slug> <email|role|group> [--role|--group]
-  qwirq project grants <slug>       show who a project is shared with
+  qwirq repo ls                     list repositories you can access
+  qwirq repo new <slug> [--name <t>]   create a repository (private git repo)
+  qwirq repo rename <slug> [--slug <new>] [--name <t>]   rename a repository
+  qwirq repo rm <slug> [--yes]      delete a repository (asks to confirm)
+  qwirq repo share <slug> <email|role|group> [--role|--group] [--read|--manage|--own]
+  qwirq repo unshare <slug> <email|role|group> [--role|--group]
+  qwirq repo grants <slug>          show who a repository is shared with
+  qwirq project <sub>               (deprecated alias for 'qwirq repo'; use 'qwirq repo' instead)
   qwirq git setup                   let git authenticate to git.qwirq.com with your qwirq login
-  qwirq clone <project>             clone a project repo over HTTPS (uses your login, no keys)
+  qwirq clone <repo>                clone a repository over HTTPS (uses your login, no keys)
 
   qwirq data status                 is there an app database for your company yet?
   qwirq data provision              create your company's isolated app database
@@ -314,6 +315,73 @@ async function main() {
       execFileSync('git', ['config', '--global', `credential.${base}.username`, 'qwirq'], { stdio: 'inherit' })
       out(`git will authenticate to ${base} with your qwirq login (run 'qwirq login' first).\nClone a project with: qwirq clone <project>`)
       return
+    }
+
+    case 'repo':
+    case 'repository': {
+      const sub = positional[0]
+      const slug = positional[1]
+      if (sub === 'ls') {
+        const { repositories } = await apiFetch('GET', '/api/v1/repositories')
+        if (!repositories.length) { out('(no repositories)'); return }
+        for (const r of repositories) out(`${r.slug}\t${r.mine ? '(owner) ' : ''}${r.name}`)
+        return
+      }
+      if (sub === 'new') {
+        if (!slug) return fail('usage: qwirq repo new <slug> [--name <text>]')
+        const body = { slug, name: typeof flags.name === 'string' ? flags.name : slug }
+        const r = await apiFetch('POST', '/api/v1/repositories', { body })
+        out(`Created repository ${r.repository.slug}. Clone it with: qwirq clone ${r.repository.slug}`)
+        return
+      }
+      if (sub === 'rename') {
+        if (!slug) return fail('usage: qwirq repo rename <slug> [--slug <new>] [--name <text>]')
+        const body = {}
+        if (typeof flags.slug === 'string') body.slug = flags.slug
+        if (typeof flags.name === 'string') body.name = flags.name
+        if (!body.slug && !body.name) return fail('nothing to change (use --slug and/or --name)')
+        const r = await apiFetch('PATCH', `/api/v1/repositories/${encodeURIComponent(slug)}`, { body })
+        out(`Renamed ${slug}${body.slug ? ` → ${r.slug}` : ''}.`)
+        return
+      }
+      if (sub === 'rm') {
+        if (!slug) return fail('usage: qwirq repo rm <slug> [--yes]')
+        if (!flags.yes) {
+          const ok = await promptYesNo(`Delete repository "${slug}"? This deletes the repo and its history and cannot be undone. [y/N] `)
+          if (ok === null) return fail('refusing to delete in a non-interactive shell without --yes')
+          if (!ok) { out('Cancelled.'); return }
+        }
+        await apiFetch('DELETE', `/api/v1/repositories/${encodeURIComponent(slug)}`)
+        out(`Deleted ${slug}.`)
+        return
+      }
+      if (sub === 'share') {
+        const grantee = positional[2]
+        if (!slug || !grantee) return fail('usage: qwirq repo share <slug> <email|role|group> [--role|--group] [--read|--manage|--own]')
+        const kind = flags.group ? 'group' : flags.role ? 'role' : 'user'
+        const permission = flags.own ? 'own' : flags.manage ? 'manage' : 'read'
+        await apiFetch('POST', `/api/v1/repositories/${encodeURIComponent(slug)}/grants`, { body: { grantee, kind, permission } })
+        const tag = kind === 'group' ? '#' + grantee : kind === 'role' ? '@' + grantee : grantee
+        out(`Shared ${slug} with ${tag} (${permission}).`)
+        return
+      }
+      if (sub === 'unshare') {
+        const grantee = positional[2]
+        if (!slug || !grantee) return fail('usage: qwirq repo unshare <slug> <email|role|group> [--role|--group]')
+        const kind = flags.group ? 'group' : flags.role ? 'role' : 'user'
+        await apiFetch('DELETE', `/api/v1/repositories/${encodeURIComponent(slug)}/grants?kind=${kind}&grantee=${encodeURIComponent(grantee)}`)
+        const tag = kind === 'group' ? '#' + grantee : kind === 'role' ? '@' + grantee : grantee
+        out(`Unshared ${slug} from ${tag}.`)
+        return
+      }
+      if (sub === 'grants') {
+        if (!slug) return fail('usage: qwirq repo grants <slug>')
+        const { grants } = await apiFetch('GET', `/api/v1/repositories/${encodeURIComponent(slug)}/grants`)
+        if (!grants.length) { out('(private — not shared)'); return }
+        for (const g of grants) out(`${g.permission.padEnd(7)} ${g.userEmail || (g.roleName ? '@' + g.roleName : '#' + g.groupName)}`)
+        return
+      }
+      return fail('usage: qwirq repo <ls|new|rename|rm|share|unshare|grants>')
     }
 
     case 'project': {
@@ -1336,6 +1404,199 @@ async function main() {
         return
       }
       return fail('usage: qwirq work <init|ls|show|new|set|move|transition|tree|rm|link|link-ci>')
+    }
+
+    case 'workplan': {
+      // Workplan scrum-object verbs: create + manage Request/Project/Epic/Story/Task/Sprint through
+      // the same server-side gates as `work` (no raw CRUD bypass). Six canonical types with their
+      // state machines + transition rules, installed once via `workplan init`. --json for
+      // agent/script consumption; --env <e> for env override (default: prod).
+      const sub = positional[0]
+      const env = typeof flags.env === 'string' ? flags.env : undefined
+      const json = !!flags.json
+      const emitJson = (data) => { out(JSON.stringify(data)) }
+
+      if (sub === 'init') {
+        const migrated = await appCall('tasks', { op: 'migrate', env })
+        if (!json && migrated.applied.length) out(`created work-item tables (${migrated.applied.join(', ')}).`)
+        const results = []
+        for (const name of WP_TYPES) {
+          const cfg = WP_CONFIG[name]
+          const existing = await appCall('tasks', { op: 'type-get', env, name }).then((r) => r.type).catch(() => null)
+          if (existing) {
+            await appCall('tasks', { op: 'type-update', env, name, prefix: cfg.prefix, policy: cfg.policy })
+            results.push({ name, prefix: cfg.prefix, action: 'updated' })
+            if (!json) out(`  ${name} (${cfg.prefix}): updated`)
+          } else {
+            await appCall('tasks', { op: 'type-define', env, name, prefix: cfg.prefix, policy: cfg.policy })
+            results.push({ name, prefix: cfg.prefix, action: 'defined' })
+            if (!json) out(`  ${name} (${cfg.prefix}): defined`)
+          }
+        }
+        if (json) emitJson({ ok: true, results })
+        else out('Workplan types ready.')
+        return
+      }
+
+      if (sub === 'types') {
+        const { types } = await appCall('tasks', { op: 'type-ls', env })
+        const wpSet = new Set(WP_TYPES)
+        const wpInstalled = types.filter((t) => wpSet.has(t.name))
+        const missing = WP_TYPES.filter((n) => !types.some((t) => t.name === n))
+        if (json) { emitJson({ ok: true, types: wpInstalled, missing }); return }
+        if (!wpInstalled.length) { out('(no Workplan types — run: qwirq workplan init)'); return }
+        for (const t of wpInstalled) out(`${t.prefix}\t${t.name}\t[${t.policy.states.join(', ')}]`)
+        if (missing.length) out(`not installed: ${missing.join(', ')}  — run: qwirq workplan init`)
+        return
+      }
+
+      if (sub === 'create') {
+        const type = positional[1]
+        if (!type || !WP_TYPES.includes(type)) return fail(`usage: qwirq workplan create <${WP_TYPES.join('|')}> --title "..." [type-specific flags]`)
+        if (typeof flags.title !== 'string' || !flags.title.trim()) return fail('--title is required')
+        const cfg = WP_CONFIG[type]
+        const input = { type, title: flags.title.trim() }
+        const parentRef = typeof flags.parent === 'string' ? flags.parent
+          : typeof flags.project === 'string' ? flags.project
+          : typeof flags.epic === 'string' ? flags.epic
+          : typeof flags.story === 'string' ? flags.story
+          : undefined
+        if (parentRef !== undefined) input.parent = parentRef
+        else if (cfg.policy.requireParent) return fail(`${type} requires a parent (${cfg.policy.allowedParentTypes.join(' or ')}); use --parent <ref>`)
+        if (typeof flags.assignee === 'string') input.assignee = flags.assignee
+        if (flags.priority !== undefined && flags.priority !== true) input.priority = Number(flags.priority)
+        if (typeof flags.due === 'string') input.due = flags.due
+        const fieldKv = parseKeyVals(flags.field)
+        if (type === 'sprint') {
+          if (typeof flags.start !== 'string' && !('start' in fieldKv)) return fail('sprint requires --start <date>')
+          if (typeof flags.end !== 'string' && !('end' in fieldKv)) return fail('sprint requires --end <date>')
+          if (typeof flags.start === 'string') fieldKv.start = flags.start
+          if (typeof flags.end === 'string') fieldKv.end = flags.end
+        }
+        if (flags.points !== undefined && flags.points !== true) fieldKv.points = Number(flags.points)
+        if (Object.keys(fieldKv).length) input.fields = fieldKv
+        const { item } = await appCall('tasks', { op: 'create', env, input })
+        if (json) { emitJson({ ok: true, item }); return }
+        out(`created ${item.shortId}  ${item.title}  [${item.state}]${item.assignee ? `  @${item.assignee}` : ''}`)
+        return
+      }
+
+      if (sub === 'set') {
+        const ref = positional[1]
+        if (!ref) return fail('usage: qwirq workplan set <ref> [--title t] [--assignee a] [--priority n] [--due d] [--points n] [--field k=v ...]')
+        const patch = {}
+        if (typeof flags.title === 'string') patch.title = flags.title
+        if (flags.assignee !== undefined) patch.assignee = flags.assignee === true ? null : flags.assignee
+        if (flags.priority !== undefined) patch.priority = flags.priority === true ? null : Number(flags.priority)
+        if (flags.due !== undefined) patch.due = flags.due === true ? null : flags.due
+        const fieldKv = parseKeyVals(flags.field)
+        if (flags.points !== undefined && flags.points !== true) fieldKv.points = Number(flags.points)
+        if (Object.keys(fieldKv).length) patch.fields = fieldKv
+        if (!Object.keys(patch).length) return fail('nothing to change (use --title/--assignee/--priority/--due/--points/--field)')
+        const { item } = await appCall('tasks', { op: 'update', env, ref, patch })
+        if (json) { emitJson({ ok: true, item }); return }
+        out(`updated ${item.shortId}.`)
+        return
+      }
+
+      if (sub === 'transition') {
+        const ref = positional[1]
+        const toState = positional[2]
+        if (!ref || !toState) return fail('usage: qwirq workplan transition <ref> <state> [--note "..."]')
+        const { item } = await appCall('tasks', { op: 'transition', env, ref, toState, note: typeof flags.note === 'string' ? flags.note : undefined })
+        if (json) { emitJson({ ok: true, item }); return }
+        out(`${item.shortId} → ${item.state}`)
+        return
+      }
+
+      if (sub === 'move') {
+        const ref = positional[1]
+        if (!ref) return fail('usage: qwirq workplan move <ref> (<parentRef> | --root)')
+        const parent = flags.root ? null : positional[2]
+        if (parent === undefined) return fail('provide a new parent ref, or --root to detach to the top level')
+        const { item } = await appCall('tasks', { op: 'set-parent', env, ref, parent })
+        if (json) { emitJson({ ok: true, item }); return }
+        out(`moved ${item.shortId} ${parent == null ? 'to root' : `under ${parent}`}.`)
+        return
+      }
+
+      if (sub === 'link') {
+        const from = positional[1]
+        const to = positional[2]
+        if (!from || !to || typeof flags.type !== 'string') return fail('usage: qwirq workplan link <from> <to> --type <t> [--remove]')
+        if (flags.remove) {
+          await appCall('tasks', { op: 'unlink', env, from, to, linkType: flags.type })
+          if (json) { emitJson({ ok: true, action: 'unlinked', from, to, linkType: flags.type }); return }
+          out(`unlinked ${from} -[${flags.type}]-> ${to}.`)
+          return
+        }
+        await appCall('tasks', { op: 'link', env, from, to, linkType: flags.type })
+        if (json) { emitJson({ ok: true, action: 'linked', from, to, linkType: flags.type }); return }
+        out(`linked ${from} -[${flags.type}]-> ${to}.`)
+        return
+      }
+
+      if (sub === 'sprint') {
+        const sprintSub = positional[1]
+        if (sprintSub === 'assign') {
+          const storyRef = positional[2]
+          const sprintRef = positional[3]
+          if (!storyRef || !sprintRef) return fail('usage: qwirq workplan sprint assign <storyRef> <sprintRef> [--remove]')
+          if (flags.remove) {
+            await appCall('tasks', { op: 'unlink', env, from: storyRef, to: sprintRef, linkType: 'sprint' })
+            if (json) { emitJson({ ok: true, action: 'unassigned', item: storyRef, sprint: sprintRef }); return }
+            out(`removed ${storyRef} from sprint ${sprintRef}.`)
+            return
+          }
+          await appCall('tasks', { op: 'link', env, from: storyRef, to: sprintRef, linkType: 'sprint' })
+          if (json) { emitJson({ ok: true, action: 'assigned', item: storyRef, sprint: sprintRef }); return }
+          out(`assigned ${storyRef} to sprint ${sprintRef}.`)
+          return
+        }
+        return fail('usage: qwirq workplan sprint assign <storyRef> <sprintRef> [--remove]')
+      }
+
+      if (sub === 'ls') {
+        const filter = {}
+        if (typeof flags.type === 'string') {
+          if (!WP_TYPES.includes(flags.type)) return fail(`unknown type: ${flags.type}. Valid: ${WP_TYPES.join(', ')}`)
+          filter.type = flags.type
+        }
+        if (typeof flags.state === 'string') filter.state = flags.state
+        if (typeof flags.assignee === 'string') filter.assignee = flags.assignee
+        if (flags.roots) filter.parent = null
+        else if (typeof flags.parent === 'string') filter.parent = flags.parent
+        const { items } = await appCall('tasks', { op: 'list', env, filter })
+        const wpSet = new Set(WP_TYPES)
+        const wpItems = filter.type ? items : items.filter((i) => wpSet.has(i.type))
+        if (json) { emitJson({ ok: true, items: wpItems }); return }
+        if (!wpItems.length) { out('(no items)'); return }
+        for (const i of wpItems) out(`${i.shortId}\t${i.type}\t${i.state}\t${i.title}${i.assignee ? `\t@${i.assignee}` : ''}`)
+        return
+      }
+
+      if (sub === 'show') {
+        const ref = positional[1]
+        if (!ref) return fail('usage: qwirq workplan show <ref>')
+        const { item } = await appCall('tasks', { op: 'get', env, ref })
+        const { links } = await appCall('tasks', { op: 'links', env, ref })
+        const { events } = await appCall('tasks', { op: 'events', env, ref })
+        if (json) { emitJson({ ok: true, item, links, events: events.slice(-10) }); return }
+        out(`${item.shortId}  ${item.title}`)
+        out(`  type:   ${item.type}`)
+        out(`  state:  ${item.state}`)
+        if (item.parentId) out(`  parent: ${item.parentId}`)
+        if (item.assignee) out(`  assignee: ${item.assignee}`)
+        if (item.priority != null) out(`  priority: ${item.priority}`)
+        if (item.due) out(`  due:    ${item.due}`)
+        if (item.fields && Object.keys(item.fields).length) out(`  fields: ${JSON.stringify(item.fields)}`)
+        for (const l of links.outgoing) out(`  link →  ${l.linkType} ${l.toId}`)
+        for (const l of links.incoming) out(`  link ←  ${l.linkType} ${l.fromId}`)
+        for (const e of events.slice(-5)) out(`  · ${e.at}  ${e.kind}${e.fromState ? ` ${e.fromState}->${e.toState}` : e.toState ? ` ${e.toState}` : ''}${e.actor ? `  by ${e.actor}` : ''}${e.note ? ` — "${e.note}"` : ''}`)
+        return
+      }
+
+      return fail('usage: qwirq workplan <init|types|create|set|transition|move|link|sprint|ls|show>')
     }
 
     case 'ci-type': {
