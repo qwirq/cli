@@ -126,6 +126,9 @@ async function show(qid, json, io) {
  * overlapping pages are dropped by sequence, a reconnect resumes after the last line printed, and when
  * the followed attempt ends while the job moves on (lease lost, retry), follow switches to the new
  * attempt from sequence 1 — lines of different attempts never mix (each carries its attempt).
+ * Following an attempt that does not exist yet (the job is still queued; the API 404s until a claim)
+ * waits for the claim; a job that ends before reaching that attempt exits 1. Without --follow a 404
+ * stays an error.
  */
 async function logs(qid, firstAttempt, follow, json, io) {
   const { signal, release } = interruptible()
@@ -139,9 +142,43 @@ async function logs(qid, firstAttempt, follow, json, io) {
     if (json) io.out(JSON.stringify({ type: 'line', jobQID: qid, attempt, seq: l.seq, at: l.at, step: l.step, stream: l.stream, text: l.text }))
     else io.out(l.stream === 'system' ? `${clock(l.at)}  -- ${l.text}` : `${clock(l.at)}  ${l.step}${l.stream === 'err' ? ' !' : ''}  ${l.text}`)
   }
+  // follow only: the requested attempt 404'd. Poll the job until it reaches that attempt (-> null,
+  // read the log) or ends without it (-> exit 1). A missing JOB still 404s out of pollGet (exit 2).
+  let waitingSaid = false
+  let rechecked = false
+  const waitForAttempt = async (notFound) => {
+    for (;;) {
+      const { job } = await pollGet(JOB(qid), { signal, onLost, onBack })
+      if (job.attempt >= attempt) {
+        if (rechecked) throw notFound // the job has the attempt yet its log still 404s: a real not-found
+        rechecked = true
+        return null
+      }
+      if (TERMINAL.has(job.state)) {
+        if (json) io.out(JSON.stringify({ type: 'end', jobQID: qid, attempt, state: job.state, attemptStarted: false }))
+        else io.err(`Job ${qid} ${stateWord(job.state)} before attempt ${attempt} started; there is no log to follow.`)
+        return EXIT.failed
+      }
+      if (!waitingSaid) {
+        waitingSaid = true
+        if (json) io.out(JSON.stringify({ type: 'waiting', jobQID: qid, attempt, state: job.state, currentAttempt: job.attempt, queuedReason: job.queuedReason ?? null }))
+        else io.err(`Waiting for the job to start… (attempt ${attempt}; job is ${stateWord(job.state)}${job.state === 'queued' && job.queuedReason ? `: ${queuedWords(job.queuedReason)}` : ''})`)
+      }
+      await sleep(poll, signal)
+    }
+  }
   try {
     for (;;) {
-      const page = await pollGet(`${JOB(qid)}/log${qs({ attempt, after: lastSeq, limit: LOG_PAGE })}`, { signal, onLost, onBack })
+      let page
+      try {
+        page = await pollGet(`${JOB(qid)}/log${qs({ attempt, after: lastSeq, limit: LOG_PAGE })}`, { signal, onLost, onBack })
+      } catch (e) {
+        if (!follow || e?.status !== 404) throw e
+        const done = await waitForAttempt(e)
+        if (done !== null) return done
+        continue
+      }
+      rechecked = false
       if (page.attempt !== undefined && page.attempt !== attempt) throw new Error(`server answered attempt ${page.attempt} for a request about attempt ${attempt}`)
       for (const l of page.lines ?? []) {
         if (l.seq <= lastSeq) continue // duplicate / overlapping page

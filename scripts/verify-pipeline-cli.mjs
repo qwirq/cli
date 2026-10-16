@@ -186,6 +186,57 @@ const logPage = (attempt, lines, { hasMore = false, terminal = false, truncated 
   check('follow on a failed job exits 1 and says so', r.code === 1 && /Job 31 failed \(attempt 1\)/.test(r.stderr), `exit=${r.code} ${r.stderr}`)
 }
 
+// ============ follow an attempt that doesn't exist yet (job still queued; API 404s until claim) ============
+function queuedThenRoute({ endWithout = false } = {}) {
+  let details = 0, claimed = false, logReads = 0
+  const queued = job(31, 'test', 'queued', 0, { queuedReason: { code: 'no_matching_worker', labels: ['linux'], since: AT } })
+  return (r) => {
+    if (r.path === '/api/v1/pipeline/jobs/31') {
+      details++
+      if (endWithout) return [200, detail(details < 3 ? queued : { ...queued, state: 'cancelled', queuedReason: null }, [])]
+      if (details >= 3) claimed = true
+      if (!claimed) return [200, detail(queued, [])]
+      return [200, logReads >= 1 ? detail(job(31, 'test', 'succeeded', 1), [attemptRow(1, 'succeeded')]) : detail(job(31, 'test', 'running', 1), [attemptRow(1, 'running')])]
+    }
+    if (r.path === '/api/v1/pipeline/jobs/31/log') {
+      if (!claimed) return envelope(404, 'not_found', 'attempt not found')
+      logReads++
+      return logPage(1, [line(1, 'started')], { terminal: true })
+    }
+    return envelope(404, 'not_found', 'nope')
+  }
+}
+{
+  route = queuedThenRoute()
+  let r = await run(['jobs', 'logs', '31', '--attempt', '1', '--follow', '--json'])
+  let ev = ndjson(r.stdout)
+  const waits = ev.filter((e) => e.type === 'waiting')
+  check('follow before claim: one `waiting` event (attempt, state, reason), then the log', waits.length === 1 && waits[0].attempt === 1 && waits[0].state === 'queued' && waits[0].queuedReason?.code === 'no_matching_worker' && ev.indexOf(waits[0]) < ev.findIndex((e) => e.type === 'line'), r.stdout)
+  check('follow before claim: lines of attempt 1 once claimed, end succeeded, exit 0', JSON.stringify(ev.filter((e) => e.type === 'line').map((e) => [e.attempt, e.seq])) === '[[1,1]]' && ev[ev.length - 1].type === 'end' && ev[ev.length - 1].state === 'succeeded' && r.code === 0, `exit=${r.code} ${r.stderr}`)
+
+  route = queuedThenRoute()
+  r = await run(['jobs', 'logs', '31', '--attempt', '1', '--follow'])
+  check('follow before claim (human): "Waiting for the job to start…" printed once, exit 0', (r.stderr.match(/Waiting for the job to start…/g) || []).length === 1 && /no online worker with labels linux/.test(r.stderr) && /started/.test(r.stdout) && r.code === 0, `exit=${r.code} ${r.stderr}`)
+
+  route = queuedThenRoute({ endWithout: true })
+  r = await run(['jobs', 'logs', '31', '--attempt', '1', '--follow'])
+  check('job ends before the attempt exists → exit 1 with a clear line', r.code === 1 && /Job 31 cancelled before attempt 1 started; there is no log to follow\./.test(r.stderr), `exit=${r.code} ${r.stderr}`)
+  route = queuedThenRoute({ endWithout: true })
+  r = await run(['jobs', 'logs', '31', '--attempt', '1', '--follow', '--json'])
+  ev = ndjson(r.stdout)
+  check('… --json: end event {state:cancelled, attemptStarted:false}, exit 1', r.code === 1 && ev[ev.length - 1].type === 'end' && ev[ev.length - 1].state === 'cancelled' && ev[ev.length - 1].attemptStarted === false, r.stdout)
+
+  route = queuedThenRoute()
+  r = await run(['jobs', 'logs', '31', '--attempt', '1'])
+  check('without --follow a not-yet-existing attempt is still exit 2 [not_found]', r.code === 2 && /\[not_found\]/.test(r.stderr), `exit=${r.code} ${r.stderr}`)
+  route = () => envelope(404, 'not_found', 'job not found')
+  r = await run(['jobs', 'logs', '77', '--attempt', '1', '--follow'])
+  check('follow on a job that does not exist → exit 2 [not_found] (no waiting)', r.code === 2 && /job not found/.test(r.stderr) && !/Waiting/.test(r.stderr), `exit=${r.code} ${r.stderr}`)
+  route = (r) => (r.path.endsWith('/log') ? envelope(404, 'not_found', 'attempt not found') : [200, detail(job(31, 'test', 'running', 2), [])])
+  r = await run(['jobs', 'logs', '31', '--attempt', '1', '--follow'])
+  check('job past the attempt but its log 404s → exit 2 after one recheck (no endless wait)', r.code === 2 && /attempt not found/.test(r.stderr), `exit=${r.code} ${r.stderr}`)
+}
+
 // ============ retry / cancel: body, 409, 403, usage ============
 {
   route = (r) => {

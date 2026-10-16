@@ -51,6 +51,8 @@ qwirq project status <repo> [--json]            what the latest push did (also: 
 - `logs --follow` reads by (attempt, `after` cursor), polling every 500 ms. Overlapping pages are
   dropped by sequence, a dropped connection resumes after the last printed line, and when the job
   moves to a new attempt (lease lost, retry) it says so and follows that attempt from line 1.
+  Following an attempt that hasn't started (the job is still queued) waits for it ("Waiting for the
+  job to start…", NDJSON `waiting`); if the job ends without reaching that attempt, exit 1.
 - `--json`: reads print the API response; `logs` and `watch` print NDJSON events
   (`line` {jobQID, attempt, seq, at, step, stream, text}, `attempt`, `truncated`, `target`, `job`, `end`).
   Errors go to stderr as `{code, status, message}`.
