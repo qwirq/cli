@@ -4,16 +4,42 @@
   "title": "qwirq.yaml",
   "description": "QWIRQ project manifest: how a project presents and runs on QWIRQ. The build pipeline (P0-c) parses this into a registry AppManifest + runner entries; VS Code validates against it (DX-5). See DEV-EXPERIENCE-PLAN.md sections 3 and 6.",
   "type": "object",
-  "required": ["id", "name", "provides"],
+  "required": ["id", "name"],
+  "anyOf": [
+    { "required": ["provides"] },
+    { "required": ["pipeline"] }
+  ],
   "additionalProperties": false,
   "properties": {
     "id": {
       "type": "string",
       "pattern": "^[a-z][a-z0-9-]*$",
-      "description": "Stable app id within the instance (kebab-case). Becomes AppManifest.id / instance_apps.app_id."
+      "description": "Stable app id within the instance (kebab-case). Becomes AppManifest.id / instance_apps.app_id. WARNING: changing this value on a git push registers a NEW app at the new id and leaves the old registration intact — the old URL (/a/<old-id>) stays live and stale. To rename cleanly, either add renamedFrom: <old-id> to this manifest (one push, then remove it) or run `qwirq app rename <old-id> <new-id>` / `qwirq app rm <old-id>` to clean up the orphan."
+    },
+    "renamedFrom": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$",
+      "description": "One-time migration hint: the old app id this project was previously registered under. On the first push after adding this field the deploy pipeline removes the stale old-id registration and registers under the current id in one atomic operation. Remove this field after the first successful push."
     },
     "name": { "type": "string", "minLength": 1, "description": "Display name in the shell." },
-    "icon": { "type": "string", "description": "Icon key the shell maps to an icon component." },
+    "icon": {
+      "type": "string",
+      "description": "Icon key the shell maps to an icon component. Use a built-in key from @qwirq/ui-icon-kit or define a custom icon under custom_icons. Unknown keys fall back to the folder icon (warning emitted, not an error).",
+      "x-builtinIconKeys": ["access_time","account_circle","add","analytics","apps","arrow_back","arrow_forward","article","assignment","attach_file","badge","bar_chart","book","bookmark","bug_report","build","calendar_month","calendar_today","cancel","category","chat","check","check_circle","checklist","chevron_left","chevron_right","close","cloud","cloud_done","cloud_download","cloud_upload","code","comment","content_copy","dashboard","data_usage","database","db","delete","description","dns","done","done_all","download","edit","error","event","expand_less","expand_more","extension","fact_check","favorite","filter_list","flag","folder","folder_open","forum","grid_view","group","help","history","home","info","insights","integration_instructions","key","label","launch","link","list_alt","lock","lock_open","login","logout","mail","memory","menu","more_horiz","more_vert","notifications","notifications_none","open_in_new","pending","pending_actions","person","person_add","pie_chart","playlist_add_check","redo","refresh","save","schedule","search","security","send","settings","share","shield","show_chart","sort","star","star_border","sticky_note","storage","table_view","task_alt","terminal","text_snippet","thumb_down","thumb_up","trending_up","tune","undo","update","upload","view_list","visibility","visibility_off","vpn_key","warning"]
+    },
+    "custom_icons": {
+      "type": "array",
+      "description": "Custom icons for this app registered into the shell icon registry. Each entry supplies a key (used in the icon field or via the registry) and raw SVG inner markup.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key", "svg"],
+        "properties": {
+          "key": { "type": "string", "minLength": 1, "description": "Registry key for this icon, e.g. my_logo." },
+          "svg": { "type": "string", "minLength": 1, "description": "Raw SVG inner markup (paths, circles, etc.) inserted into a 24x24 viewBox shell." }
+        }
+      }
+    },
     "nav": {
       "type": "object",
       "additionalProperties": false,
@@ -38,7 +64,7 @@
       "type": "object",
       "additionalProperties": false,
       "minProperties": 1,
-      "description": "The capabilities this project provides (at least one). A project can provide several.",
+      "description": "The capabilities this project provides (at least one). A project can provide several. Optional only when pipeline.checks is present (a pipeline-only project is not an app and is never registered into an instance).",
       "properties": {
         "app": {
           "type": "object",
@@ -98,6 +124,11 @@
         }
       }
     },
+    "components": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Catalog component IDs this project installs beyond the free baseline @qwirq/blocks (e.g. 'acme/data-grid'). The deploy pipeline checks entitlements for each listed component; unlicensed entries block the deploy. Omit to use the baseline kit only."
+    },
     "data": {
       "type": "object",
       "additionalProperties": false,
@@ -108,14 +139,131 @@
     },
     "runtime": {
       "type": "string",
-      "enum": ["node20"],
+      "enum": ["node20", "python312", "rust"],
       "default": "node20",
-      "description": "Backend runtime host. P0 supports node20; python and rust are a fast-follow (DX-8) and will extend this enum. UI is always React/TS regardless."
+      "description": "Backend runtime host. 'node20' = in-process Node (P0 default); 'python312' = CPython subprocess (DX-8, gated on DX-4+DX-2); 'rust' = native binary compiled at build time (DX-8). UI is always React/TS regardless of runtime."
     },
     "platform": {
       "type": "string",
       "pattern": "^[0-9]{4}\\.[0-9]{2}$",
       "description": "The instance platform release this builds against (pins React + the SDK), e.g. '2026.06'."
+    },
+    "pipeline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["checks"],
+      "description": "Checks run on every push against the exact pushed commit. This platform version supports the command adapter with no network; unsupported fields are rejected, never ignored.",
+      "properties": {
+        "checks": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 50,
+          "description": "The commit's checks (at most 50). Names are unique; needs form an acyclic graph.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "adapter", "image", "steps"],
+            "properties": {
+              "name": { "$ref": "#/$defs/pipelineName", "description": "Check name, unique within the manifest; referenced by needs." },
+              "adapter": { "type": "string", "enum": ["command"], "description": "How the check runs. 'command' = ordered argv steps in a container." },
+              "required": { "type": "boolean", "default": true, "description": "Whether the check gates the commit's status." },
+              "image": {
+                "type": "string",
+                "maxLength": 512,
+                "pattern": "^(?:[a-zA-Z0-9](?:[a-zA-Z0-9.-]*[a-zA-Z0-9])?(?::[0-9]+)?/)?[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha256:[0-9a-f]{64}$",
+                "x-patternMessage": "is not digest-pinned: use name[:tag]@sha256:<64 lowercase hex>",
+                "description": "Immutable image reference: name[:tag]@sha256:<64 lowercase hex>. A tag alone is rejected; resolve it to its digest."
+              },
+              "labels": {
+                "type": "array",
+                "maxItems": 16,
+                "items": { "$ref": "#/$defs/pipelineName" },
+                "description": "Worker labels this check needs, e.g. [linux, docker]. A worker must carry all of them."
+              },
+              "needs": {
+                "type": "array",
+                "maxItems": 50,
+                "items": { "$ref": "#/$defs/pipelineName" },
+                "description": "Checks in this manifest that must succeed first. A failed dependency skips this check."
+              },
+              "steps": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 32,
+                "description": "Ordered steps (at most 32); the check stops at the first failing step.",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["name", "run"],
+                  "properties": {
+                    "name": { "$ref": "#/$defs/pipelineName", "description": "Step name, unique within the check." },
+                    "run": {
+                      "type": "array",
+                      "minItems": 1,
+                      "maxItems": 256,
+                      "items": { "type": "string", "maxLength": 8192 },
+                      "description": "argv, e.g. [node, test.mjs]. No implicit shell; write [sh, -c, '...'] when you want one."
+                    },
+                    "cwd": { "$ref": "#/$defs/relativePath", "description": "Working directory relative to the repository root; must stay inside it." },
+                    "env": {
+                      "type": "object",
+                      "maxProperties": 64,
+                      "propertyNames": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$", "x-patternMessage": "is not a valid environment variable name", "maxLength": 128 },
+                      "additionalProperties": { "type": "string", "maxLength": 4096 },
+                      "description": "Literal environment values. Never put secrets here; the manifest is committed."
+                    },
+                    "network": { "type": "string", "enum": ["none"], "default": "none", "description": "Network access. Only 'none' is supported in this platform version." }
+                  }
+                }
+              },
+              "outputs": {
+                "type": "array",
+                "maxItems": 32,
+                "description": "Files kept after the check runs (test reports, logs).",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["name", "path"],
+                  "properties": {
+                    "name": { "$ref": "#/$defs/pipelineName", "description": "Output name, unique within the check." },
+                    "path": { "$ref": "#/$defs/relativePath", "description": "File path relative to the repository root; must stay inside it." },
+                    "when": { "type": "string", "enum": ["always", "success", "failure"], "default": "always", "description": "Keep the file always, only on success, or only on failure." }
+                  }
+                }
+              },
+              "limits": { "$ref": "#/$defs/pipelineLimits" }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "pipelineName": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]*$",
+      "x-patternMessage": "must be lowercase letters, digits, ., _ or - and start with a letter or digit",
+      "maxLength": 63,
+      "description": "Lowercase name: letters, digits, '.', '_', '-'; starts with a letter or digit."
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^(?![/\\\\])(?![A-Za-z]:)(?!.*\\\\)(?!(?:.*/)?\\.\\.(?:/|$))[^\\u0000-\\u001f]+$",
+      "x-patternMessage": "must be a relative path inside the repository (no leading /, no .. segment, no backslash or drive letter)",
+      "description": "Relative POSIX path inside the repository: no leading '/', no '..' segment, no backslash or drive letter."
+    },
+    "pipelineLimits": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Per-check resource limits. Omitted values take the defaults; worker policy can lower them.",
+      "properties": {
+        "seconds": { "type": "integer", "minimum": 1, "maximum": 7200, "default": 1800, "description": "Timeout for the whole check, in seconds." },
+        "memoryMb": { "type": "integer", "minimum": 64, "maximum": 6144, "default": 2048, "description": "Memory limit in MiB." },
+        "cpus": { "type": "number", "minimum": 0.1, "maximum": 4, "default": 2, "description": "CPU limit (fractional cores)." },
+        "pids": { "type": "integer", "minimum": 16, "maximum": 4096, "default": 512, "description": "Process-count limit." }
+      }
     }
   }
 }

@@ -9,24 +9,29 @@ import { loadConfig, readToken } from './config.mjs'
 // throw always propagates to the top-level handler, which sets a non-zero exit, so `set -e` scripts
 // stop. `host` distinguishes the api vs the auth surface in the message.
 export function httpError(status, data, { host = 'the QWIRQ server' } = {}) {
-  if (status === 401) return Object.assign(new Error('Not signed in or token expired. Run: qwirq login'), { status })
-  if (status === 403) return Object.assign(new Error("You don't have permission for that in this company."), { status })
-  if (status === 404) return Object.assign(new Error(`Not found${data?.resource ? `: ${data.resource}` : ''}.`), { status })
+  // The envelope's stable `code` (explicit `code` wins, else the `error` family) and the raw body ride
+  // on every error so verbs can branch on the code and show the server's own message (M0 pipeline).
+  const envelopeCode = data?.code || (typeof data?.error === 'string' ? data.error : undefined)
+  const extra = { status, ...(envelopeCode ? { code: envelopeCode } : {}), body: data ?? null }
+  if (status === 401) return Object.assign(new Error('Not signed in or token expired. Run: qwirq login'), extra)
+  if (status === 403) return Object.assign(new Error("You don't have permission for that in this company."), extra)
+  if (status === 404) return Object.assign(new Error(`Not found${data?.resource ? `: ${data.resource}` : ''}.`), extra)
   if (status >= 500) {
     const detail = data?.message || data?.error || `HTTP ${status}`
     return Object.assign(
       new Error(`${host} hit an internal error handling this request (${detail}). This is a platform-side bug, not your input; please report it.`),
-      { code: data?.code || (typeof data?.error === 'string' ? data.error : 'server_error'), status },
+      { ...extra, code: envelopeCode || 'server_error' },
     )
   }
   // 4xx domain error: prefer the human `message` (api) or the verbatim `error` text (auth). Carry a
   // stable `code` so verbs can branch on it — the explicit `code` (TasksError/CmdbError) wins, else the
   // envelope's `error` family (bad_request, not_found, …).
-  const code = data?.code || (typeof data?.error === 'string' ? data.error : undefined)
-  return Object.assign(new Error(data?.message || data?.error || `request failed (${status})`), code ? { code, status } : { status })
+  return Object.assign(new Error(data?.message || data?.error || `request failed (${status})`), extra)
 }
 
-export async function apiFetch(method, path, { body, auth = true } = {}) {
+// `signal` aborts an in-flight request (watch/follow stop on Ctrl+C). A network-level failure carries
+// `transport: true` so long-running verbs can tell "reconnect" apart from an HTTP answer.
+export async function apiFetch(method, path, { body, auth = true, signal } = {}) {
   const cfg = loadConfig()
   const token = auth ? readToken() : null
   if (auth && !token) {
@@ -43,11 +48,12 @@ export async function apiFetch(method, path, { body, auth = true } = {}) {
       method,
       headers,
       body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal,
     })
   } catch (e) {
     // Network-level failure (DNS, refused, offline). Name the URL we tried + the endpoint config,
     // so a bare "fetch failed" never leaves the user guessing which host or override is wrong (#98).
-    throw new Error(`could not reach the QWIRQ API at ${url} (${e?.cause?.code || e?.code || e?.message || 'fetch failed'}). Check your connection, or the apiBase endpoint (QWIRQ_API_URL / ~/.qwirq/config.json).`)
+    throw Object.assign(new Error(`could not reach the QWIRQ API at ${url} (${e?.cause?.code || e?.code || e?.message || 'fetch failed'}). Check your connection, or the apiBase endpoint (QWIRQ_API_URL / ~/.qwirq/config.json).`), { transport: true })
   }
   const data = await res.json().catch(() => null)
   if (!res.ok) throw httpError(res.status, data)
