@@ -197,8 +197,8 @@ QWIRQ_API_URL, QWIRQ_GIT_URL. \`qwirq logout\` clears your login but keeps those
 
 Exit codes (stable, for scripts): 0 success; 1 any error (a message is printed to stderr).
 A \`dev\`/\`types\` run exits with the underlying npm script's code.
-jobs/watch/status: 0 success; 1 the watched/followed job(s) failed, were cancelled, or timed out
-(or the push was not admitted); 2 usage, auth, permission, not-found, conflict, or connection error
+jobs/watch/status: 0 success; 1 a followed job, or a REQUIRED watched job, failed, was cancelled,
+timed out, or (watch) was skipped, or the push was not admitted (optional failures are reported only); 2 usage, auth, permission, not-found, conflict, or connection error
 (stderr carries the stable [code]); 130 stopped with Ctrl+C.`
 
 function indentTree(nodes, depth, lines) {

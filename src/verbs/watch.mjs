@@ -1,14 +1,18 @@
 // `qwirq watch <repo> [--sha <sha>] [--json]` — watch one push's jobs to the end (M0-SPEC §6 WP8).
 // The target (push + commit + its job numbers) is snapshotted at start; a later push never silently
-// replaces it. Exit 0 when every watched job succeeded (or was skipped), 1 when any failed, was
-// cancelled, or timed out (or the push was not admitted), 2 on usage/auth/transport errors, 130 on
-// Ctrl+C — which stops watching and never cancels a job.
+// replaces it. The exit status is decided by REQUIRED jobs only (Foreman ruling): 1 when any required
+// job ends failed, cancelled, timed out, or skipped (skipped = a dependency failed; same rule as the
+// engine's repository status), or the push was not admitted; else 0 — an optional job's failure is
+// reported but does not fail the watch. 2 on usage/auth/transport errors, 130 on Ctrl+C — which stops
+// watching and never cancels a job.
 import {
   EXIT, TERMINAL, NOT_SUCCESS, POLL_MS, UsageError, Interrupted, interruptible, sleep, pollGet, reportError,
   flagStr, qs, sha7, branch, jobPhrase, rejectionWords, stateWord, clock, stdio,
 } from './pipeline-shared.mjs'
 
 const USAGE = 'qwirq watch <repo> [--sha <sha>] [--json]'
+// A required job in any of these fails the watch; `skipped` means a dependency failed.
+const REQUIRED_FAIL = new Set([...NOT_SUCCESS, 'skipped'])
 const PAGE = 200
 
 /** Every job on one commit (all pages). */
@@ -76,12 +80,17 @@ export async function watchVerb(positional, flags, io = stdio) {
         else io.out(`  ${clock(r.updatedAt)}  ${j.name.padEnd(nameW)}  ${jobPhrase(j)}`)
       }
       if (current.length === watched.length && current.every((j) => TERMINAL.has(j.state))) {
-        const bad = current.filter((j) => NOT_SUCCESS.has(j.state))
-        if (json) emit({ type: 'end', repo, pushQID: push?.qid ?? null, commitSha: sha, outcome: bad.length ? 'failed' : 'succeeded', jobs: current.map((j) => ({ jobQID: String(j.qid), name: j.name, state: j.state, attempt: j.attempt })) })
-        else if (!bad.length) io.out(`All ${current.length} job${current.length === 1 ? '' : 's'} on ${sha7(sha)} succeeded.`)
-        else {
-          io.out(`${bad.length} of ${current.length} job${current.length === 1 ? '' : 's'} on ${sha7(sha)} did not succeed: ${bad.map((j) => `${j.name} ${stateWord(j.state)}`).join(', ')}.`)
-          for (const j of bad) io.out(`  log: qwirq jobs logs ${j.qid} --attempt ${j.attempt}`)
+        const bad = current.filter((j) => j.required && REQUIRED_FAIL.has(j.state))
+        const optionalBad = current.filter((j) => !j.required && NOT_SUCCESS.has(j.state))
+        if (json) {
+          emit({ type: 'end', repo, pushQID: push?.qid ?? null, commitSha: sha, outcome: bad.length ? 'failed' : 'succeeded',
+            jobs: current.map((j) => ({ jobQID: String(j.qid), name: j.name, required: !!j.required, state: j.state, attempt: j.attempt })) })
+        } else {
+          const n = current.filter((j) => j.required).length
+          if (!bad.length) io.out(`All ${n} required job${n === 1 ? '' : 's'} on ${sha7(sha)} succeeded.`)
+          else io.out(`${bad.length} of ${n} required job${n === 1 ? '' : 's'} on ${sha7(sha)} did not succeed: ${bad.map((j) => `${j.name} ${stateWord(j.state)}`).join(', ')}.`)
+          for (const j of optionalBad) io.out(`Optional check ${j.name} ${stateWord(j.state)} (does not fail the watch).`)
+          for (const j of [...bad, ...optionalBad]) if (j.attempt > 0) io.out(`  log: qwirq jobs logs ${j.qid} --attempt ${j.attempt}`)
         }
         return bad.length ? EXIT.failed : EXIT.ok
       }

@@ -54,8 +54,9 @@ qwirq project status <repo> [--json]            what the latest push did (also: 
 - `--json`: reads print the API response; `logs` and `watch` print NDJSON events
   (`line` {jobQID, attempt, seq, at, step, stream, text}, `attempt`, `truncated`, `target`, `job`, `end`).
   Errors go to stderr as `{code, status, message}`.
-- Exit codes: 0 success; 1 a watched/followed job failed, was cancelled, or timed out (or the push
-  was not admitted); 2 usage, auth, permission, not-found, conflict, or connection error (stderr
+- Exit codes: 0 success; 1 a followed job, or a required watched job, failed, was cancelled, timed
+  out, or (watch) was skipped because a dependency failed, or the push was not admitted (optional
+  failures are reported, exit 0); 2 usage, auth, permission, not-found, conflict, or connection error (stderr
   carries the stable `[code]`); 130 stopped with Ctrl+C.
 
 `qwirq validate` also plans a `pipeline:` the way the engine will (duplicate names, unknown or

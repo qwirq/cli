@@ -232,7 +232,7 @@ const logPage = (attempt, lines, { hasMore = false, terminal = false, truncated 
 }
 
 // ============ watch: fixed target despite a later push ============
-function watchRoute({ final = 'succeeded', blip = false, forever = false } = {}) {
+function watchRoute({ final = 'succeeded', finalTest = 'succeeded', lintRequired = true, blip = false, forever = false } = {}) {
   let unfiltered = 0, polls = 0
   return (r) => {
     if (r.path !== '/api/v1/pipeline/jobs') return envelope(404, 'not_found', 'nope')
@@ -246,8 +246,9 @@ function watchRoute({ final = 'succeeded', blip = false, forever = false } = {})
     if (r.query.sha !== SHA_A) return [200, { pushes: [], jobs: [], nextCursor: null, updatedAt: AT }]
     polls++
     if (blip && polls === 2) return envelope(502, 'server_error', 'bad gateway')
-    const s = forever ? ['running', 'queued'] : polls === 1 ? ['running', 'queued'] : polls <= 3 ? ['succeeded', 'running'] : ['succeeded', final]
-    return [200, { pushes: [push(9, SHA_A, [31, 32])], jobs: [job(31, 'test', s[0], s[0] === 'queued' ? 0 : 1), job(32, 'lint', s[1], s[1] === 'queued' ? 0 : 1)], nextCursor: null, updatedAt: AT }]
+    const s = forever ? ['running', 'queued'] : polls === 1 ? ['running', 'queued'] : polls <= 3 ? [finalTest, 'running'] : [finalTest, final]
+    const att = (st) => (st === 'queued' || st === 'skipped' ? 0 : 1)
+    return [200, { pushes: [push(9, SHA_A, [31, 32])], jobs: [job(31, 'test', s[0], att(s[0])), job(32, 'lint', s[1], att(s[1]), { required: lintRequired })], nextCursor: null, updatedAt: AT }]
   }
 }
 {
@@ -259,7 +260,7 @@ function watchRoute({ final = 'succeeded', blip = false, forever = false } = {})
   check('watch: names its target', /Watching push 9 · a1b2c3d on main · 2 jobs/.test(r.stdout), r.stdout.split('\n')[0])
   check('watch: the later push (b2c3d4e) never replaces the target', !r.stdout.includes('b2c3d4e') && !r.stdout.includes('push 11'))
   check('watch: reports transitions in words', /test\s+running · attempt 1/.test(r.stdout) && /lint\s+succeeded · attempt 1/.test(r.stdout), r.stdout)
-  check('watch: all succeeded → exit 0', r.code === 0 && /All 2 jobs on a1b2c3d succeeded/.test(r.stdout), `exit=${r.code}`)
+  check('watch: all succeeded → exit 0', r.code === 0 && /All 2 required jobs on a1b2c3d succeeded/.test(r.stdout), `exit=${r.code}`)
 
   route = watchRoute()
   r = await run(['watch', 'sample', '--json'])
@@ -269,10 +270,25 @@ function watchRoute({ final = 'succeeded', blip = false, forever = false } = {})
 
   route = watchRoute({ final: 'failed' })
   r = await run(['watch', 'sample'])
-  check('watch: a failed job → exit 1 + where to look', r.code === 1 && /1 of 2 jobs on a1b2c3d did not succeed: lint failed/.test(r.stdout) && /log: qwirq jobs logs 32 --attempt 1/.test(r.stdout), `exit=${r.code} ${r.stdout}`)
+  check('watch: a failed job → exit 1 + where to look', r.code === 1 && /1 of 2 required jobs on a1b2c3d did not succeed: lint failed/.test(r.stdout) && /log: qwirq jobs logs 32 --attempt 1/.test(r.stdout), `exit=${r.code} ${r.stdout}`)
   route = watchRoute({ final: 'timed_out' })
   r = await run(['watch', 'sample', '--json'])
   check('watch: timed out → exit 1, outcome failed', r.code === 1 && ndjson(r.stdout).pop().outcome === 'failed')
+
+  // exit status follows REQUIRED jobs only (Foreman ruling)
+  route = watchRoute({ final: 'failed', lintRequired: false })
+  r = await run(['watch', 'sample'])
+  check('watch: optional job fails, required pass → exit 0, optional failure reported', r.code === 0 && /All 1 required job on a1b2c3d succeeded/.test(r.stdout) && /Optional check lint failed \(does not fail the watch\)/.test(r.stdout), `exit=${r.code} ${r.stdout}`)
+  route = watchRoute({ final: 'failed', lintRequired: false })
+  r = await run(['watch', 'sample', '--json'])
+  const optEnd = ndjson(r.stdout).pop()
+  check('watch --json: optional failure → outcome succeeded, job carries required:false', r.code === 0 && optEnd.outcome === 'succeeded' && optEnd.jobs.some((j) => j.name === 'lint' && j.required === false && j.state === 'failed'), JSON.stringify(optEnd))
+  route = watchRoute({ final: 'skipped' })
+  r = await run(['watch', 'sample'])
+  check('watch: required job skipped (dependency failed) → exit 1', r.code === 1 && /did not succeed: lint skipped/.test(r.stdout), `exit=${r.code} ${r.stdout}`)
+  route = watchRoute({ final: 'skipped', lintRequired: false })
+  r = await run(['watch', 'sample'])
+  check('watch: optional job skipped → exit 0', r.code === 0, `exit=${r.code} ${r.stdout}`)
 
   route = watchRoute({ blip: true })
   r = await run(['watch', 'sample'])
