@@ -121,8 +121,9 @@ const HELP = `qwirq — Knowledge (Texere) + Secrets from the terminal
   qwirq jobs logs <qid> --attempt <n> [--follow] [--json]   log lines (--follow keeps reading, NDJSON with --json)
   qwirq jobs retry <qid> --attempt <n>    queue attempt n+1 (n = the attempt you saw; guards against races)
   qwirq jobs cancel <qid> --attempt <n>   cancel a queued or running job
-  qwirq watch <repo> [--sha <sha>] [--json]   watch one push's jobs to the end (target fixed at start;
-                                    Ctrl+C stops watching, never cancels)
+  qwirq watch <repo> [--sha <sha> | --latest] [--json]   watch one push's jobs to the end. Target fixed at
+                                    start: --sha; else your checkout's HEAD (waits up to 2 min for QWIRQ to
+                                    receive it); else / --latest the newest push. Ctrl+C stops watching, never cancels
 
   qwirq data status                 is there an app database for your company yet?
   qwirq data provision              create your company's isolated app database

@@ -42,12 +42,14 @@ qwirq jobs show <qid> [--json]                  steps, attempts, artifacts, what
 qwirq jobs logs <qid> --attempt <n> [--follow] [--json]
 qwirq jobs retry <qid> --attempt <n>            queue attempt n+1 (n = the attempt you saw)
 qwirq jobs cancel <qid> --attempt <n>           cancel a queued (n may be 0) or running job
-qwirq watch <repo> [--sha <sha>] [--json]       watch one push's jobs to the end
+qwirq watch <repo> [--sha <sha> | --latest] [--json]   watch one push's jobs to the end
 qwirq project status <repo> [--json]            what the latest push did (also: qwirq repo status)
 ```
 
 - `watch` fixes its target (push, commit, job numbers) at start; a later push never replaces it.
-  Ctrl+C stops watching; it never cancels a job.
+  Target: `--sha`; else, inside a git checkout, your local HEAD — right after `git push` it waits
+  ("Waiting for QWIRQ to receive <sha7>…") up to 2 min for intake, then exits 1 with a hint;
+  else (or `--latest`) the repository's newest push. Ctrl+C stops watching; it never cancels a job.
 - `logs --follow` reads by (attempt, `after` cursor), polling every 500 ms. Overlapping pages are
   dropped by sequence, a dropped connection resumes after the last printed line, and when the job
   moves to a new attempt (lease lost, retry) it says so and follows that attempt from line 1.

@@ -5,12 +5,26 @@
 // engine's repository status), or the push was not admitted; else 0 — an optional job's failure is
 // reported but does not fail the watch. 2 on usage/auth/transport errors, 130 on Ctrl+C — which stops
 // watching and never cancels a job.
+// Target: --sha <sha>; else, inside a git checkout, the local HEAD (so a watch started right after
+// `git push` never grabs the previous push while intake catches up — it waits up to 2 min for QWIRQ
+// to receive HEAD); else (or with --latest) the newest push of the repository.
+import { execFileSync } from 'node:child_process'
 import {
   EXIT, TERMINAL, NOT_SUCCESS, POLL_MS, UsageError, Interrupted, interruptible, sleep, pollGet, reportError,
   flagStr, qs, sha7, branch, jobPhrase, rejectionWords, stateWord, clock, stdio,
 } from './pipeline-shared.mjs'
 
-const USAGE = 'qwirq watch <repo> [--sha <sha>] [--json]'
+const USAGE = 'qwirq watch <repo> [--sha <sha> | --latest] [--json]'
+// How long to wait for QWIRQ to receive the local HEAD (intake lags the push a moment).
+const RECEIVE_WAIT_MS = Number(process.env.QWIRQ_RECEIVE_WAIT_MS) || 120_000
+
+/** The checkout's HEAD commit, or null outside a git checkout (or without git, or an unborn HEAD). */
+function localHead() {
+  try {
+    const out = execFileSync('git', ['rev-parse', '--verify', '--quiet', 'HEAD'], { stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf8' }).trim()
+    return /^[0-9a-f]{40}$/.test(out) ? out : null
+  } catch { return null }
+}
 // A required job in any of these fails the watch; `skipped` means a dependency failed.
 const REQUIRED_FAIL = new Set([...NOT_SUCCESS, 'skipped'])
 const PAGE = 200
@@ -42,11 +56,38 @@ export async function watchVerb(positional, flags, io = stdio) {
   }
   try {
     if (!repo) throw new UsageError(`usage: ${USAGE}`)
-    const wantSha = flagStr(flags.sha)
-    if (flags.sha !== undefined && !wantSha) throw new UsageError(`--sha needs a commit. usage: ${USAGE}`)
+    if (flags.sha !== undefined && !flagStr(flags.sha)) throw new UsageError(`--sha needs a commit. usage: ${USAGE}`)
+    if (flags.sha !== undefined && flags.latest) throw new UsageError(`use --sha or --latest, not both. usage: ${USAGE}`)
+    const head = flags.sha === undefined && !flags.latest ? localHead() : null
+    const wantSha = flagStr(flags.sha) ?? head ?? undefined
 
     // --- snapshot the target ---
-    const first = await pollGet(`/api/v1/pipeline/jobs${qs({ repo, sha: wantSha, limit: PAGE })}`, opts)
+    let first = await pollGet(`/api/v1/pipeline/jobs${qs({ repo, sha: wantSha, limit: PAGE })}`, opts)
+    if (head) {
+      if (json) emit({ type: 'head', repo, commitSha: head })
+      else io.out(`Watching ${sha7(head)} (your HEAD).`)
+      // wait for intake to admit (or reject) the push of HEAD
+      const started = Date.now()
+      let waitingSaid = false
+      while (!(first.pushes ?? []).some((p) => p.newSha === head) && !(first.jobs ?? []).length) {
+        if (Date.now() - started >= RECEIVE_WAIT_MS) {
+          if (json) emit({ type: 'end', repo, pushQID: null, commitSha: head, outcome: 'not_received', jobs: [] })
+          else {
+            io.out(`QWIRQ has not received ${sha7(head)} after ${Math.round(RECEIVE_WAIT_MS / 1000)} s.`)
+            io.out(`  Check that \`git push\` went to the QWIRQ remote (git remote -v) and that ${sha7(head)} has a qwirq.yaml with a pipeline,`)
+            io.out(`  or watch something else: qwirq watch ${repo} --sha <sha> | --latest`)
+          }
+          return EXIT.failed
+        }
+        if (!waitingSaid) {
+          waitingSaid = true
+          if (json) emit({ type: 'waiting', repo, commitSha: head })
+          else io.err(`Waiting for QWIRQ to receive ${sha7(head)}…`)
+        }
+        await sleep(poll, signal)
+        first = await pollGet(`/api/v1/pipeline/jobs${qs({ repo, sha: head, limit: PAGE })}`, opts)
+      }
+    }
     const pushes = (first.pushes ?? []).filter((p) => !wantSha || p.newSha === wantSha)
     // with --sha, prefer the newest ADMITTED push of that commit; without, the newest push, period
     const push = wantSha ? (pushes.find((p) => p.admission === 'accepted') ?? pushes[0]) : pushes[0]
@@ -60,7 +101,7 @@ export async function watchVerb(positional, flags, io = stdio) {
       return EXIT.failed
     }
     const watched = push?.jobQIDs?.length ? push.jobQIDs.map(String) : (first.jobs ?? []).filter((j) => j.commitSha === sha).map((j) => String(j.qid))
-    if (json) emit({ type: 'target', repo, pushQID: push?.qid ?? null, commitSha: sha, ref: push?.ref ?? null, jobQIDs: watched })
+    if (json) emit({ type: 'target', repo, source: head ? 'head' : flags.sha !== undefined ? 'sha' : 'latest', pushQID: push?.qid ?? null, commitSha: sha, ref: push?.ref ?? null, jobQIDs: watched })
     else io.out(`Watching ${push ? `push ${push.qid} · ` : ''}${sha7(sha)}${push ? ` on ${branch(push.ref)}` : ''} · ${watched.length} job${watched.length === 1 ? '' : 's'}. Ctrl+C stops watching; jobs keep running.`)
 
     // --- poll the commit, report changes of the watched jobs ---

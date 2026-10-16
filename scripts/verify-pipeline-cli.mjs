@@ -5,11 +5,12 @@
 // Ctrl+C on the real binary needs POSIX signals; on Windows (where a parent can only hard-kill a child)
 // the same handler is driven in-process instead. No API, DB, or network needed.
 //   node scripts/verify-pipeline-cli.mjs
-import { spawn } from 'node:child_process'
+import { spawn, execFileSync } from 'node:child_process'
 import { createServer } from 'node:http'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 const SHA_A = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678'
 const SHA_B = 'b2c3d4e5f60718293a4b5c6d7e8f901234567890'
@@ -35,7 +36,12 @@ const server = createServer((req, res) => {
 await new Promise((r) => server.listen(0, '127.0.0.1', r))
 const BASE = `http://127.0.0.1:${server.address().port}`
 const HOME = mkdtempSync(join(tmpdir(), 'qwirq-wp8-'))
-const ENV = { QWIRQ_API_URL: BASE, QWIRQ_TOKEN: 'mock', QWIRQ_HOME: HOME, QWIRQ_POLL_MS: '20', QWIRQ_RECONNECT_MS: '5000' }
+const BIN = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'qwirq.mjs')
+// Commands run OUTSIDE any git checkout by default (watch would otherwise default to the local HEAD);
+// the ceiling stops git from discovering a repository above the temp dir.
+const NOGIT = mkdtempSync(join(tmpdir(), 'qwirq-wp8-nogit-'))
+const cwd0 = process.cwd()
+const ENV = { QWIRQ_API_URL: BASE, QWIRQ_TOKEN: 'mock', QWIRQ_HOME: HOME, QWIRQ_POLL_MS: '20', QWIRQ_RECONNECT_MS: '5000', GIT_CEILING_DIRECTORIES: dirname(NOGIT) }
 
 let failures = 0
 const out = (s) => process.stdout.write(s + '\n')
@@ -43,9 +49,9 @@ const check = (label, cond, detail = '') => { out(`${cond ? 'PASS' : 'FAIL'}  ${
 const envelope = (status, code, message) => [status, { error: code, code, message, requestId: 'req-1' }]
 const ndjson = (s) => s.split('\n').filter(Boolean).map((l) => JSON.parse(l))
 
-function run(args, { onStdout, env } = {}) {
+function run(args, { onStdout, env, cwd = NOGIT } = {}) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, ['bin/qwirq.mjs', ...args], { env: { ...process.env, ...ENV, ...env } })
+    const child = spawn(process.execPath, [BIN, ...args], { cwd, env: { ...process.env, ...ENV, ...env } })
     let so = '', se = ''
     child.stdout.on('data', (d) => { so += d; onStdout?.(so, child) })
     child.stderr.on('data', (d) => (se += d))
@@ -380,6 +386,7 @@ function watchRoute({ final = 'succeeded', finalTest = 'succeeded', lintRequired
   }
   // in-process (every platform): the verb's own SIGINT handler, via process.emit
   Object.assign(process.env, ENV)
+  process.chdir(NOGIT)
   const { watchVerb } = await import('../src/verbs/watch.mjs')
   const { jobsVerb } = await import('../src/verbs/jobs.mjs')
   const cap = () => { const o = { so: '', se: '' }; o.io = { out: (s = '') => (o.so += s + '\n'), err: (s = '') => (o.se += s + '\n') }; return o }
@@ -399,6 +406,75 @@ function watchRoute({ final = 'succeeded', finalTest = 'succeeded', lintRequired
   pollsAt = reqs.length
   ;[code] = await Promise.all([jobsVerb(['logs', '31'], { attempt: '1', follow: true }, c.io), fire(() => reqs.length - pollsAt >= 3)])
   check('in-process: SIGINT → log follow returns 130, no cancel', code === 130 && /Stopped following/.test(c.se) && cancels() === before, `code=${code}`)
+}
+
+// ============ watch inside a git checkout: defaults to the local HEAD, waits for intake ============
+let hasGit = true
+try { execFileSync('git', ['--version'], { stdio: 'ignore' }) } catch { hasGit = false }
+if (!hasGit) out('note  git not installed: skipping the watch-in-a-checkout (local HEAD) checks')
+else {
+  process.chdir(cwd0)
+  const repoDir = mkdtempSync(join(tmpdir(), 'qwirq-wp8-git-'))
+  const git = (...a) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@x', '-c', 'commit.gpgsign=false', ...a], { cwd: repoDir, encoding: 'utf8', env: { ...process.env, GIT_CEILING_DIRECTORIES: dirname(repoDir) } }).trim()
+  git('init', '-q')
+  writeFileSync(join(repoDir, 'qwirq.yaml'), 'id: sample\nname: Sample\n')
+  git('add', '.')
+  git('commit', '-q', '-m', 'init')
+  const HEAD = git('rev-parse', 'HEAD')
+  const h7 = HEAD.slice(0, 7)
+  const PREV = SHA_A // the previous admitted push: what a naive "latest push" watch would grab
+  // intake lag: HEAD unknown for the first `lag` sha-polls, then admitted (or rejected)
+  const headRoute = ({ lag = 3, reject = false, never = false } = {}) => {
+    let polls = 0
+    return (r) => {
+      if (r.path !== '/api/v1/pipeline/jobs') return envelope(404, 'not_found', 'nope')
+      if (!r.query.sha) return [200, { pushes: [push(9, PREV, [31])], jobs: [job(31, 'test', 'succeeded', 1)], nextCursor: null, updatedAt: AT }]
+      if (r.query.sha !== HEAD) return [200, { pushes: [], jobs: [], nextCursor: null, updatedAt: AT }]
+      polls++
+      if (never || polls <= lag) return [200, { pushes: [], jobs: [], nextCursor: null, updatedAt: AT }]
+      if (reject) return [200, { pushes: [push(13, HEAD, [], { admission: 'rejected', rejectionCode: 'queue_full' })], jobs: [], nextCursor: null, updatedAt: AT }]
+      const st = polls <= lag + 2 ? 'running' : 'succeeded'
+      return [200, { pushes: [push(13, HEAD, [50])], jobs: [{ ...job(50, 'test', st, 1), commitSha: HEAD }], nextCursor: null, updatedAt: AT }]
+    }
+  }
+  route = headRoute()
+  let n = reqs.length
+  let r = await run(['watch', 'sample'], { cwd: repoDir })
+  check('watch in a checkout: names the local HEAD', r.stdout.startsWith(`Watching ${h7} (your HEAD).`), r.stdout.split('\n')[0])
+  check('watch in a checkout: waits for intake ("Waiting for QWIRQ to receive …" once)', (r.stderr.match(new RegExp(`Waiting for QWIRQ to receive ${h7}…`, 'g')) || []).length === 1, r.stderr)
+  check('watch in a checkout: every request pinned to HEAD (never the previous push)', since(n).length >= 4 && since(n).every((x) => x.query.sha === HEAD) && !r.stdout.includes('a1b2c3d') && !r.stdout.includes('push 9'), JSON.stringify(since(n).map((x) => x.query.sha?.slice(0, 7))))
+  check("watch in a checkout: follows HEAD's push to success, exit 0", r.code === 0 && /Watching push 13 · /.test(r.stdout) && /All 1 required job on .* succeeded/.test(r.stdout), `exit=${r.code} ${r.stdout}`)
+
+  route = headRoute()
+  r = await run(['watch', 'sample', '--json'], { cwd: repoDir })
+  const ev = ndjson(r.stdout)
+  check('watch --json in a checkout: head → waiting (once) → target(source head) → end', ev[0].type === 'head' && ev[0].commitSha === HEAD && ev.filter((e) => e.type === 'waiting').length === 1 && ev.find((e) => e.type === 'target')?.source === 'head' && ev.pop().outcome === 'succeeded', r.stdout)
+
+  route = headRoute({ never: true })
+  r = await run(['watch', 'sample'], { cwd: repoDir, env: { QWIRQ_RECEIVE_WAIT_MS: '300' } })
+  check('HEAD never received → gives up, exit 1, hints at git push / the QWIRQ remote', r.code === 1 && r.stdout.includes(`QWIRQ has not received ${h7}`) && /git push/.test(r.stdout) && /git remote -v/.test(r.stdout), `exit=${r.code} ${r.stdout}`)
+  route = headRoute({ never: true })
+  r = await run(['watch', 'sample', '--json'], { cwd: repoDir, env: { QWIRQ_RECEIVE_WAIT_MS: '300' } })
+  check('… --json: end {outcome:not_received}', r.code === 1 && ndjson(r.stdout).pop().outcome === 'not_received')
+
+  route = headRoute({ reject: true })
+  r = await run(['watch', 'sample'], { cwd: repoDir })
+  check("HEAD's push rejected (queue_full) → exit 1 with the reason", r.code === 1 && r.stdout.includes(`Push 13 (${h7} on main) was not admitted: too many outstanding jobs (queue full)`), `exit=${r.code} ${r.stdout}`)
+
+  route = watchRoute()
+  n = reqs.length
+  r = await run(['watch', 'sample', '--latest'], { cwd: repoDir })
+  check('--latest in a checkout keeps the newest-push behavior', r.code === 0 && !since(n)[0].query.sha && /Watching push 9 · a1b2c3d/.test(r.stdout), `exit=${r.code} ${r.stdout}`)
+  route = watchRoute()
+  n = reqs.length
+  r = await run(['watch', 'sample', '--sha', SHA_A], { cwd: repoDir })
+  check('--sha in a checkout wins over HEAD', r.code === 0 && since(n).every((x) => x.query.sha === SHA_A) && !r.stdout.includes('your HEAD'))
+  r = await run(['watch', 'sample', '--sha', SHA_A, '--latest'], { cwd: repoDir })
+  check('--sha with --latest → exit 2 usage', r.code === 2)
+  route = watchRoute()
+  n = reqs.length
+  r = await run(['watch', 'sample'])
+  check('outside a checkout: unchanged (newest push, no HEAD line)', r.code === 0 && !since(n)[0].query.sha && !r.stdout.includes('your HEAD'))
 }
 
 // ============ project status / repo status ============
