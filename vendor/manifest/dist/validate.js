@@ -78,7 +78,7 @@ function check(value, schema, p, out, root) {
     const t = typeOf(value);
     if (t === 'object') {
         for (const req of schema.required ?? []) {
-            if (!(req in value))
+            if (!Object.keys(value).includes(req))
                 push('required', `${at}: missing required "${req}"`);
         }
         const n = Object.keys(value).length;
@@ -183,7 +183,9 @@ export function warnManifest(value) {
 }
 /** Read + schema-validate a project dir's qwirq.yaml; throws with every error listed.
  *  Icon-key warnings are emitted to stderr but do not throw. A pipeline-only manifest (no `provides`)
- *  comes back with `provides: {}` — see Manifest.provides and isPipelineOnly. */
+ *  comes back with a NON-ENUMERABLE `provides: {}` — typed access works (Manifest.provides), while
+ *  absence is preserved for validateManifest/planPipeline/JSON (they see only enumerable keys), so
+ *  planPipeline(readManifest(dir)) re-validates cleanly. Test with isPipelineOnly. */
 export function readManifest(projectDir) {
     const p = path.join(projectDir, 'qwirq.yaml');
     if (!fs.existsSync(p))
@@ -196,7 +198,9 @@ export function readManifest(projectDir) {
     for (const w of warnings)
         console.warn(`[qwirq.yaml] WARNING: ${w}`);
     const m = value;
-    return m.provides ? m : { ...m, provides: {} };
+    if (!m.provides)
+        Object.defineProperty(m, 'provides', { value: {}, enumerable: false, writable: true, configurable: true });
+    return m;
 }
 /** True when the manifest provides nothing to an instance (a pipeline-only project): no app, functions,
  *  or jobs. Accepts a readManifest result or a raw validated value whose `provides` is absent. Such a

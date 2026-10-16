@@ -18,4 +18,4 @@ missing module breaks every import of the runtime.
 
 To refresh: rebuild `lib/manifest` (`npm run build`) and re-copy `dist/*.js` + `schemas/*.json` here.
 Source of truth stays `lib/manifest`; this is a packaging mirror for the public install path only.
-0.4.0 copied from `lib/manifest` @ 205bd77 (`m0/pipeline-manifest`).
+0.4.0 copied from `lib/manifest` @ d521b67 (`m0/pipeline-manifest`: 205bd77 + review fixes).
