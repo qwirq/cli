@@ -9,7 +9,7 @@ browser, you approve, and a personal access token is stored in `~/.qwirq/config.
 From the GitHub release tarball (Node 18+; the only runtime dependency, `yaml`, comes from npmjs):
 
 ```
-npm install -g https://github.com/qwirq/cli/releases/download/v0.15.0/qwirq-cli-0.15.0.tgz
+npm install -g https://github.com/qwirq/cli/releases/download/v0.15.1/qwirq-cli-0.15.1.tgz
 qwirq help
 ```
 
@@ -17,10 +17,10 @@ Each release also carries the source as `.tar.gz`/`.zip` and a `SHA256SUMS` file
 installing:
 
 ```
-curl -fsSLO https://github.com/qwirq/cli/releases/download/v0.15.0/qwirq-cli-0.15.0.tgz
-curl -fsSLO https://github.com/qwirq/cli/releases/download/v0.15.0/SHA256SUMS
-grep 'qwirq-cli-0.15.0.tgz$' SHA256SUMS | sha256sum -c -
-npm install -g ./qwirq-cli-0.15.0.tgz
+curl -fsSLO https://github.com/qwirq/cli/releases/download/v0.15.1/qwirq-cli-0.15.1.tgz
+curl -fsSLO https://github.com/qwirq/cli/releases/download/v0.15.1/SHA256SUMS
+grep 'qwirq-cli-0.15.1.tgz$' SHA256SUMS | sha256sum -c -
+npm install -g ./qwirq-cli-0.15.1.tgz
 ```
 
 Not yet on the public npm registry (`npm install -g @qwirq/cli` will not work until it is).
@@ -114,9 +114,13 @@ Verify offline: `npm run verify:signing-cli`.
 
 ## Config
 
-`~/.qwirq/config.json`: `{ apiBase, authBase, token, company }`. Overrides via env: `QWIRQ_API_URL`,
-`QWIRQ_AUTH_URL`, `QWIRQ_TOKEN`, `QWIRQ_HOME` (config dir). Defaults point at local dev
-(`http://localhost:5000` / `:4000`).
+`~/.qwirq/config.json`: `{ apiBase, authBase, token, company, npmRegistryUrl }`. Overrides via env: `QWIRQ_API_URL`,
+`QWIRQ_AUTH_URL`, `QWIRQ_NPM_REGISTRY_URL`, `QWIRQ_TOKEN`, `QWIRQ_HOME` (config dir). Endpoint defaults are
+production (`https://api.qwirq.com`, `https://auth.qwirq.com`, `https://git.qwirq.com`).
+
+`npmRegistryUrl` is your instance's npm registry for `@qwirq/*` (`qwirq config set npm-registry <https URL>`;
+`get`/`unset` too). `qwirq init` writes it into the new project's `.npmrc` and refuses, creating nothing,
+when it is unset or not a credential-free absolute https URL. There is no default and no fallback.
 
 The stored token is a personal access token: long-lived, scoped to one (user, company), and
 revocable server-side. `qwirq logout` forgets it locally.
