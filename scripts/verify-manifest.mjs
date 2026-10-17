@@ -75,7 +75,7 @@ check('unknown adapter -> adapter_unknown', !badAdapter.ok && badAdapter.issues.
 const deps = parseManifestText(pipelineOnly.replace('network: none', 'network: dependencies'))
 check('0.5.0: step network "dependencies" validates and plans', validateManifest(deps).length === 0 && planPipeline(deps).ok, validateManifest(deps).join(' | '))
 const rt = await import('../vendor/manifest/dist/index.js')
-check('0.5.0: runtime exports planBuilds + normalizeJobPlans + NETWORK_PROFILES', typeof rt.planBuilds === 'function' && typeof rt.normalizeJobPlans === 'function' && Array.isArray(rt.NETWORK_PROFILES) || typeof rt.NETWORK_PROFILES === 'object')
+check('0.5.0: runtime exports planBuilds + normalizeJobPlans + NETWORK_PROFILES', typeof rt.planBuilds === 'function' && typeof rt.normalizeJobPlans === 'function' && rt.NETWORK_PROFILES != null)
 
 console.log('')
 console.log(fail === 0 ? 'ALL PASS' : `${fail} FAILED`)
