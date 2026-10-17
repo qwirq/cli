@@ -12,6 +12,9 @@ import { parseManifestText, validateManifest, planPipeline, writeLocalSchema, en
 import { jobsVerb } from '../src/verbs/jobs.mjs'
 import { watchVerb } from '../src/verbs/watch.mjs'
 import { statusVerb } from '../src/verbs/project-status.mjs'
+import { buildVerb, buildsVerb } from '../src/verbs/build.mjs'
+import { releaseVerb } from '../src/verbs/release.mjs'
+import { channelVerb } from '../src/verbs/channel.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -125,6 +128,31 @@ const HELP = `qwirq — Knowledge (Texere) + Secrets from the terminal
                                     start: --sha; else your checkout's HEAD (waits up to 2 min for QWIRQ to
                                     receive it); else / --latest the newest push. Ctrl+C stops watching, never cancels
 
+  qwirq build <repo> --target <name> --sha <sha> [--channel <name>] [--json]   request a build of one commit
+                                    (--channel binds it to that channel's distribution)
+  qwirq build show <buildQID> [--json]    inputs, version, checks, artifacts, where it is released
+  qwirq build retry <buildQID> [--json]   a new build (new version code) from the same inputs
+  qwirq builds ls <repo> [--sha <sha>] [--target <name>] [--json]   recent builds
+  qwirq release list <repo> [--channel <name>] [--json]   published history (current marked)
+  qwirq release show <releaseQID> [--json]   every entry: build, commit, version, runtime, sha256, size, cert
+  qwirq release preview <repo> --channel <name> --build <buildQID> [--json]
+                                    effects in words, blockers, and the snapshot to publish against
+  qwirq release publish <repo> --channel <name> --build <buildQID> --expected-current <qid|none>
+                                    --expected-revision <n> [--notes-file <path> | --stdin] [--no-wait] [--json]
+                                    publish exactly what the preview showed; waits until verified + published
+  qwirq release promote <repo> --from <channel> --to <channel> [--expected-current <qid|none> --expected-revision <n>]
+                                    publish --from's current release on --to; without the snapshot: preview, refuse
+  qwirq release again <releaseQID> --expected-current <qid> --expected-revision <n> [--notes-file <path>] [--no-wait]
+                                    roll back to an earlier release (a native roll-back rebuilds it forward with a
+                                    higher version code); pauses auto-publish on the channel
+  qwirq release wait <requestQID> | --recovery <recoveryQID> [--json]   resume following a publication
+                                    Publish waits follow the server's request: Ctrl+C stops watching, never publication.
+                                    stale_channel = the channel moved since your preview: re-run preview (never retried)
+  qwirq channel list <repo> [--json]   one line per channel: current release, auto-publish, revision
+  qwirq channel pause <repo> <channel> --expected-revision <n>    stop auto-publish (owner)
+  qwirq channel resume <repo> <channel> --expected-revision <n>   turn auto-publish back on (owner)
+  qwirq channel link <repo> <channel> [--json]   the permanent app page URL to share (never a download URL)
+
   qwirq data status                 is there an app database for your company yet?
   qwirq data provision              create your company's isolated app database
   qwirq data tables [--env <e>]     list tables in your app database (default env: prod)
@@ -200,7 +228,11 @@ Exit codes (stable, for scripts): 0 success; 1 any error (a message is printed t
 A \`dev\`/\`types\` run exits with the underlying npm script's code.
 jobs/watch/status: 0 success; 1 a followed job, or a REQUIRED watched job, failed, was cancelled,
 timed out, or (watch) was skipped, or the push was not admitted (optional failures are reported only); 2 usage, auth, permission, not-found, conflict, or connection error
-(stderr carries the stable [code]); 130 stopped with Ctrl+C.`
+(stderr carries the stable [code]); 130 stopped with Ctrl+C.
+build/release/channel: same codes. 0 success (a waited publish: published); 1 the publication or recovery
+you waited on was rejected, went stale, or failed; 2 usage, auth, permission (incl. publication_forbidden:
+agent tokens never publish), not-found, conflict (incl. stale_channel), or connection error; --json prints
+{code,status,message} on stderr; 130 Ctrl+C stopped watching (publication continues on the server).`
 
 function indentTree(nodes, depth, lines) {
   for (const n of nodes || []) {
@@ -423,6 +455,14 @@ async function main() {
     case 'jobs': { process.exitCode = await jobsVerb(positional, flags); return }
 
     case 'watch': { process.exitCode = await watchVerb(positional, flags); return }
+
+    case 'build': { process.exitCode = await buildVerb(positional, flags); return }
+
+    case 'builds': { process.exitCode = await buildsVerb(positional, flags); return }
+
+    case 'release': { process.exitCode = await releaseVerb(positional, flags); return }
+
+    case 'channel': { process.exitCode = await channelVerb(positional, flags); return }
 
     case 'repo':
     case 'repository': {
