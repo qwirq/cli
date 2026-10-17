@@ -208,6 +208,7 @@
               "services": { "$ref": "#/$defs/pipelineServices" },
               "caches": { "$ref": "#/$defs/pipelineCaches" },
               "reports": { "$ref": "#/$defs/pipelineReports" },
+              "inputs": { "$ref": "#/$defs/checkInputs" },
               "steps": {
                 "type": "array",
                 "minItems": 1,
@@ -465,33 +466,42 @@
         },
         "inputs": {
           "type": "array",
-          "maxItems": 8,
-          "description": "android-apk only: public build inputs placed at path before prebuild (e.g. google-services.json). Supplied by the owner-configured input of the same name when not in the repository; the digest is recorded with the build. Never credentials.",
+          "maxItems": 16,
+          "description": "android-apk only: declared inputs (any kind; at most 16 together with downloads, at most 8 files and 8 downloads). An entry without kind is the 0.5 file alias: a public build input placed at path before prebuild (e.g. google-services.json), supplied by the owner-configured input of the same name when not in the repository; its digest is recorded with the build. Never credentials. Normalized with downloads into one canonical inputs list.",
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["name", "path"],
+            "required": ["name"],
+            "anyOf": [{ "required": ["kind"] }, { "required": ["path"] }],
             "properties": {
+              "kind": { "$ref": "#/$defs/input/properties/kind", "description": "Absent = file (0.5 alias, which requires path)." },
               "name": { "$ref": "#/$defs/pipelineName" },
-              "path": { "$ref": "#/$defs/relativePath" },
-              "sha256": { "$ref": "#/$defs/sha256", "description": "Optional pin; a different file fails the build." }
+              "path": { "$ref": "#/$defs/relativePath", "description": "file/download destination. Kinded entries must be an exact input path." },
+              "sha256": { "$ref": "#/$defs/sha256", "description": "file: optional pin (a different file fails the build); other kinds: required." },
+              "repository": { "$ref": "#/$defs/input/properties/repository" },
+              "commit": { "$ref": "#/$defs/input/properties/commit" },
+              "paths": { "$ref": "#/$defs/input/properties/paths" },
+              "lockfile": { "$ref": "#/$defs/input/properties/lockfile" },
+              "privateScopes": { "$ref": "#/$defs/input/properties/privateScopes" },
+              "url": { "$ref": "#/$defs/input/properties/url" },
+              "unpack": { "$ref": "#/$defs/input/properties/unpack" }
             }
           }
         },
         "downloads": {
           "type": "array",
           "maxItems": 8,
-          "description": "android-apk only: checksum-pinned files fetched through the dependency proxy (never by a package's own unchecked script), verified, and placed after install and after the runtime fingerprint is computed. unpack: zip extracts into path. The host must be on the reviewed dependency allowlist.",
+          "description": "android-apk only (0.5 alias of kind: download): checksum-pinned files fetched through the dependency proxy (never by a package's own unchecked script), verified, and placed after install and after the runtime fingerprint is computed. unpack: zip extracts into path. The host must be on the reviewed dependency allowlist. Normalized into the canonical inputs list.",
           "items": {
             "type": "object",
             "additionalProperties": false,
             "required": ["name", "url", "sha256", "path"],
             "properties": {
               "name": { "$ref": "#/$defs/pipelineName" },
-              "url": { "type": "string", "maxLength": 2048, "pattern": "^https://[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+(?:/[A-Za-z0-9._~%!$&'()*+,;=:@/-]*)?$", "x-patternMessage": "must be an https URL on a named host (no credentials, port, query or fragment)" },
+              "url": { "$ref": "#/$defs/input/properties/url" },
               "sha256": { "$ref": "#/$defs/sha256" },
               "path": { "$ref": "#/$defs/relativePath", "description": "Destination file, or directory when unpack is zip." },
-              "unpack": { "type": "string", "enum": ["none", "zip"], "default": "none" }
+              "unpack": { "$ref": "#/$defs/input/properties/unpack" }
             }
           }
         },
@@ -567,10 +577,44 @@
             "limits": { "$ref": "#/$defs/pipelineLimits" },
             "services": { "$ref": "#/$defs/pipelineServices" },
             "caches": { "$ref": "#/$defs/pipelineCaches" },
-            "reports": { "$ref": "#/$defs/pipelineReports" }
+            "reports": { "$ref": "#/$defs/pipelineReports" },
+            "inputs": { "$ref": "#/$defs/checkInputs" }
           }
         }
       }
+    },
+    "checkInputs": {
+      "type": "array",
+      "maxItems": 16,
+      "description": "Platform-supplied inputs, verified by digest before any step runs and mounted read-only at /inputs/<name> (an npm seed's attempt-local writable copy is /cache/<name>). Checks: kind repository | npm. Planning never fetches; fetching is authorized by operator policy, never by this declaration. Empty = none.",
+      "items": { "$ref": "#/$defs/input" }
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "name"],
+      "description": "One declared input. repository: exact files/directories of a platform repository at an exact commit (sha256 = qwirq.input-tree.v1 digest). npm: a credential-free package seed for a committed package-lock.json (sha256 of the raw lockfile bytes). file / download: build-only placements (the 0.5 build aliases).",
+      "properties": {
+        "kind": { "type": "string", "enum": ["repository", "npm", "file", "download"] },
+        "name": { "$ref": "#/$defs/pipelineName", "description": "Unique per check/build; the mount is /inputs/<name>." },
+        "repository": { "type": "string", "maxLength": 127, "pattern": "^[a-z0-9][a-z0-9-]{0,62}/[a-z0-9][a-z0-9-]{0,62}$", "x-patternMessage": "is not a platform repository identifier <owner>/<repo> (never a URL or local path)", "description": "repository: the platform repository, resolved through operator configuration." },
+        "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$", "x-patternMessage": "is not a full 40-character lowercase hex commit (no branch, tag or short SHA)", "description": "repository: the exact commit." },
+        "paths": { "type": "array", "minItems": 1, "maxItems": 64, "items": { "$ref": "#/$defs/inputPath" }, "description": "repository: exact files/directories (no globs), non-overlapping; repository-relative names are preserved under the mount." },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "lockfile": { "$ref": "#/$defs/inputPath", "description": "npm: a committed package-lock.json (lockfileVersion 3)." },
+        "privateScopes": { "type": "array", "maxItems": 16, "items": { "type": "string", "maxLength": 64, "pattern": "^@[a-z0-9][a-z0-9-]{0,62}$", "x-patternMessage": "is not an npm scope (@name)" }, "description": "npm: private scopes the seed may hold (e.g. [\"@qwirq\"]). Default none. Authorization is operator policy." },
+        "path": { "$ref": "#/$defs/inputPath", "description": "file/download: destination file, or directory when unpack is zip." },
+        "url": { "type": "string", "maxLength": 2048, "pattern": "^https://[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+(?:/[A-Za-z0-9._~%!$&'()*+,;=:@/-]*)?$", "x-patternMessage": "must be an https URL on a named host (no credentials, port, query or fragment)" },
+        "unpack": { "type": "string", "enum": ["none", "zip"], "default": "none" }
+      }
+    },
+    "inputPath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^(?!/)(?!.*//)(?!.*/$)(?!(?:.*/)?\\.\\.?(?:/|$))[^\\u0000-\\u001f\\u007f\\\\*?\\[\\]{}:]+$",
+      "x-patternMessage": "must be an exact relative POSIX path (no leading /, empty, . or .. segment, backslash, control character, glob character or colon)",
+      "description": "Exact relative POSIX input path, never normalized."
     },
     "pipelineName": {
       "type": "string",

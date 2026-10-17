@@ -1,5 +1,5 @@
 // qwirq.yaml manifest — the CLI's thin adapter over @qwirq/manifest (#93). The parse/validate logic and
-// the JSON Schema live ONCE in the shared package (deps-free JS build, 0.5.0). Because that package is
+// the JSON Schema live ONCE in the shared package (deps-free JS build, 0.6.0). Because that package is
 // gated (GitHub Packages only) and the public CLI must install from a clean machine (`npm i -g
 // github:qwirq/cli`, #166), the runtime + schema are VENDORED into ./vendor/manifest (see its README).
 // The CLI re-exports the parse/validate surface from the vendored copy and keeps only the CLI-specific

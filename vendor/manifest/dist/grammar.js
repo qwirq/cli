@@ -18,13 +18,14 @@ export const isChannelName = (v) => typeof v === 'string' && CHANNEL_RE.test(v);
 const ADAPTER_FIELD = /(?:^pipeline\.checks\[\d+\]|^pipeline\.builds\[\d+\]|^jobs\[\d+\]\.spec)\.adapter$/;
 const NETWORK_FIELD = /(?:^pipeline\.checks\[\d+\]|^jobs\[\d+\]\.spec)\.steps\[\d+\]\.network$/;
 const PLATFORM_FIELD = /^releases\.channels\[\d+\]\.platform$/;
+const INPUT_KIND_FIELD = /(?:^pipeline\.checks\[\d+\]|^pipeline\.builds\[\d+\]|^jobs\[\d+\]\.spec)\.inputs\[\d+\]\.kind$/;
 const FEATURE_ROOTS = ['pipeline.', 'releases.', 'jobs['];
-/** Map a schema issue to an engine code: an unknown field, adapter, network or platform is a feature this
+/** Map a schema issue to an engine code: an unknown field, adapter, network, platform or input kind is a feature this
  *  platform version does not support; everything else is an invalid manifest. */
 export function classifySchemaIssue(i) {
     if (i.keyword === 'enum' && ADAPTER_FIELD.test(i.path))
         return 'adapter_unknown';
-    if (i.keyword === 'enum' && (NETWORK_FIELD.test(i.path) || PLATFORM_FIELD.test(i.path)))
+    if (i.keyword === 'enum' && (NETWORK_FIELD.test(i.path) || PLATFORM_FIELD.test(i.path) || INPUT_KIND_FIELD.test(i.path)))
         return 'unsupported_feature';
     if (i.keyword === 'additionalProperties' && FEATURE_ROOTS.some((r) => i.path.startsWith(r)))
         return 'unsupported_feature';

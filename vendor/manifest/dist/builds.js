@@ -6,7 +6,7 @@
  * revisioned brokers, so nothing here can sign, publish, grant secrets, open public access or unpause.
  */
 import { containedPath } from './grammar.js';
-import { DEPENDENCY_EGRESS_POLICY, isAllowedEgressHost } from './profiles.js';
+import { buildInputEntries, canonInputs, checkInputs, INPUT_KINDS, isInputPath } from './inputs.js';
 import { loadSchema } from './validate.js';
 /** Schema defaults (the schema is the one home of every default). */
 const BUILD = () => loadSchema().$defs.pipelineBuild.properties;
@@ -70,18 +70,12 @@ export function analyzeBuilds(m) {
                 if (s.cwd !== undefined)
                     contained(s.cwd, `${at}.prepare[${j}].cwd`, true);
             });
-            unique((b.inputs ?? []).map((s) => s.name), (j) => `${at}.inputs[${j}].name`, 'input name');
-            (b.inputs ?? []).forEach((s, j) => contained(s.path, `${at}.inputs[${j}].path`, false));
-            unique((b.downloads ?? []).map((s) => s.name), (j) => `${at}.downloads[${j}].name`, 'download name');
-            (b.downloads ?? []).forEach((s, j) => {
-                contained(s.path, `${at}.downloads[${j}].path`, false);
-                const host = new URL(s.url).hostname;
-                if (/^[0-9.]+$/.test(host))
-                    bad(`${at}.downloads[${j}].url`, 'an IP-literal host is not allowed');
-                else if (!isAllowedEgressHost(host)) {
-                    bad(`${at}.downloads[${j}].url`, `host "${host}" is not in the reviewed dependency allowlist (revision ${DEPENDENCY_EGRESS_POLICY.revision})`);
+            (b.inputs ?? []).forEach((s, j) => {
+                if ('kind' in s && s.kind !== undefined && 'path' in s && s.path !== undefined && !isInputPath(s.path)) {
+                    bad(`${at}.inputs[${j}].path`, `"${s.path}" is not an exact input path (relative POSIX; no empty, . or .. segment, glob character or colon)`);
                 }
             });
+            checkInputs(buildInputEntries(at, b.inputs, b.downloads, bad), { kinds: INPUT_KINDS, owner: 'build' }, bad);
             unique(b.architectures ?? [], (j) => `${at}.architectures[${j}]`, 'architecture');
         }
         else {
@@ -138,8 +132,7 @@ export function analyzeBuilds(m) {
                     const senv = sortedMap(s.env);
                     return { name: s.name, run: [...s.run], ...(cwd ? { cwd } : {}), ...(Object.keys(senv).length ? { env: senv } : {}) };
                 }),
-                inputs: (b.inputs ?? []).map((s) => ({ name: s.name, path: containedPath(s.path), ...(s.sha256 ? { sha256: s.sha256 } : {}) })),
-                downloads: (b.downloads ?? []).map((s) => ({ name: s.name, url: s.url, sha256: s.sha256, path: containedPath(s.path), unpack: s.unpack ?? BUILD().downloads.items.properties.unpack.default })),
+                inputs: canonInputs(buildInputEntries(`pipeline.builds`, b.inputs, b.downloads, () => { }).map(([i]) => i)),
                 architectures: b.architectures ? dedupe(b.architectures) : [...DEFAULT_ARCHITECTURES],
                 runtime: b.runtime ?? BUILD().runtime.default,
                 ...(Object.keys(env).length ? { env } : {}),

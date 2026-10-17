@@ -13,9 +13,11 @@
  *    Platform-injected variables (proxy settings on `dependencies` steps) override both at run time.
  *  - ${matrix.<axis>} is replaced in step run items and env values only; nothing is evaluated.
  *  - services: key-sorted map; caches: declared order, inputs sorted; reports/outputs: declared order.
+ *  - inputs (0.6): canonical per inputs.ts (sorted by name), last spec key, absent when empty.
  */
 import { checkSchemaNode, loadSchema } from './validate.js';
 import { containedPath, DEFAULT_TARGET_REF, matchPathGlob, normalizeGlob, schemaIssuesToPipeline, validBranchRef, } from './grammar.js';
+import { canonInputs, CHECK_INPUT_KINDS, checkInputs, npmCachePath } from './inputs.js';
 /** Maximum jobs per submission after matrix expansion (lib/pipeline MAX_JOBS_PER_SUBMISSION). */
 export const MAX_JOBS = 50;
 const ALL_EVENTS = ['manual', 'pull_request', 'push'];
@@ -112,6 +114,8 @@ function canonSpec(adapter, image, f, jobEnv) {
             retentionDays: r.retentionDays ?? d.report.retentionDays,
         }));
     }
+    if (f.inputs?.length)
+        spec.inputs = canonInputs(f.inputs);
     return spec;
 }
 function canonTrigger(on) {
@@ -205,6 +209,18 @@ function checkSpecFields(f, at, bad, matrixAxes, jobEnv) {
                 bad(`${cat}.inputs[${k}]`, 'must name a file, not the workspace itself');
             else if (/[*?[\]{}]/.test(p))
                 bad(`${cat}.inputs[${k}]`, `"${raw}" must be an exact file path (no globs)`);
+        });
+    });
+    const inputs = f.inputs ?? [];
+    checkInputs(inputs.map((x, j) => [x, `${at}.inputs[${j}]`]), { kinds: CHECK_INPUT_KINDS, owner: 'check' }, bad);
+    inputs.forEach((x, j) => {
+        if (x.kind !== 'npm')
+            return;
+        const seed = npmCachePath(x.name);
+        (f.caches ?? []).forEach((c, k) => {
+            if (c.path === seed || c.path.startsWith(seed + '/') || seed.startsWith(c.path + '/')) {
+                bad(`${at}.caches[${k}].path`, `"${c.path}" overlaps ${seed}, the writable copy of npm input ${at}.inputs[${j}] ("${x.name}")`);
+            }
         });
     });
 }

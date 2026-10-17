@@ -85,6 +85,7 @@ export function reportError(e, { json = false, io = stdio } = {}) {
   else if (e?.status === 404) msg = `${server || 'not found'} (or you can't see it).`
   else if (code === 'invalid_state') msg = `${msg}. Check the job's current attempt with: qwirq jobs show <qid>`
   else if (code === 'queue_full') msg = `${msg} Try again when some jobs finish.`
+  else if (code === 'inputs_frozen') msg = 'checks with inputs are paused by an operator. Try again later.'
   if (json) io.err(JSON.stringify({ code, status: e?.status ?? null, message: msg }))
   else io.err(`error: ${msg} [${code}]`)
   return EXIT.error
@@ -124,8 +125,16 @@ export function queuedWords(reason) {
     return reason.labels?.length ? `no online worker with labels ${reason.labels.join(', ')}` : 'no online worker for this repository'
   }
   if (reason.code === 'worker_busy') return 'waiting for a free worker'
+  if (reason.code === 'executor_unsupported') {
+    // pipeline 0.4 (WP6): workers fit, but none whose executor can deliver every declared input kind
+    const kinds = (reason.inputKinds ?? []).map((k) => INPUT_KIND_WORDS[k] ?? k)
+    return `waiting for a worker that can provide its inputs${kinds.length ? ` (${kinds.join(', ')})` : ''}`
+  }
   return reason.code
 }
+
+/** Declared input kinds (manifest 0.6) in words. */
+const INPUT_KIND_WORDS = { repository: 'repository files', npm: 'npm packages', file: 'files', download: 'downloads' }
 
 /** One job's state as a short phrase: "running · attempt 2", "queued (no online worker …)". */
 export function jobPhrase(job) {
