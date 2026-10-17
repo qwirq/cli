@@ -76,13 +76,17 @@ qwirq signing identity create <repo> --name <name> --app <applicationId> --cert 
 qwirq signing approve <repo> <identity> --cert <sha256>
 qwirq signing pin <repo> <identity> <channel>
 qwirq signing unpin <repo> <identity> <channel>
+qwirq signing grant|revoke <repo> <identity> --machine <MCH-n>
+qwirq signing disable|enable <repo> <identity>
 ```
 
 The key is imported offline first (`lib/secrets/scripts/import-eas-keystore.mjs --prefix <prefix>`, which
 prints the certificate SHA-256 it verified); `identity create` sends only that prefix (the four vault
 entry names) and the digest — never key material. `approve` must restate the same digest (colons and
 case are accepted, as apksigner prints them). `pin` signs the channel with the approved certificate;
-`unpin` leaves it unsigned (its releases refuse). `<identity>` is a name or number. Owner-only; agent
+`unpin` leaves it unsigned (its releases refuse). `grant`/`revoke` allow or withdraw the box signer
+machine; `disable`/`enable` stop or resume all signing with the identity (pins and grants are kept).
+`<identity>` is a name or number. Owner-only; agent
 tokens get `[publication_forbidden]`. Exit 0 success, 2 usage/permission/not-found/conflict/connection.
 Verify offline: `npm run verify:signing-cli`.
 

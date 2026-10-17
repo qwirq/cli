@@ -181,11 +181,67 @@ const list = (ids) => [200, { identities: ids, updatedAt: AT }]
   check('unknown subcommand → exit 2 with every signing usage line', r.code === 2 && /qwirq signing status <repo>/.test(r.stderr) && /qwirq signing unpin <repo> <identity> <channel>/.test(r.stderr), r.stderr)
 }
 
+// ============ grant / revoke / disable / enable ============
+{
+  const ok = identity({ revision: 7 })
+  route = (r) => {
+    if (r.method === 'GET' && r.path === LIST) return list([identity(), identity({ qid: '6', name: 'other' })])
+    if (r.method === 'POST' && r.path === '/api/v1/signing-identities/5/grant') return [200, { identity: ok, grantQID: '31' }]
+    if (r.method === 'POST' && r.path === '/api/v1/signing-identities/5/revoke') return [200, { identity: ok, revoked: r.body?.machine === 'MCH-3' }]
+    if (r.method === 'POST' && r.path === '/api/v1/signing-identities/5/disable') return [200, { identity: identity({ status: 'disabled', revision: 8 }) }]
+    if (r.method === 'POST' && r.path === '/api/v1/signing-identities/5/enable') return [200, { identity: identity({ revision: 9 }) }]
+    if (r.method === 'POST' && r.path === '/api/v1/signing-identities/6/grant') return envelope(403, 'publication_forbidden', 'Agent principals cannot change signing settings.', { detail: { reason: 'agent_principal' } })
+    if (r.method === 'POST' && r.path === '/api/v1/signing-identities/6/disable') return envelope(403, 'forbidden', 'Signing settings are changed by a company owner.', { detail: { reason: 'owner_only' } })
+    if (r.method === 'POST' && r.path === '/api/v1/signing-identities/6/revoke') return envelope(404, 'not_found', 'machine not found.', { detail: { reason: 'machine' } })
+    return envelope(404, 'not_found', 'nope')
+  }
+  let n = reqs.length
+  let r = await run(['signing', 'grant', 'sample', 'chalktally-upload', '--machine', 'MCH-3'])
+  let m = mutations(since(n))
+  check('grant → one POST /grant {machine}, words with the grant', r.code === 0 && m.length === 1 && m[0].path === '/api/v1/signing-identities/5/grant'
+    && JSON.stringify(m[0].body) === JSON.stringify({ machine: 'MCH-3' }) && /MCH-3 may sign with chalktally-upload \(grant 31, revision 7\)/.test(r.stdout), r.stdout)
+  n = reqs.length
+  r = await run(['signing', 'revoke', 'sample', '5', '--machine', 'MCH-3', '--json'])
+  let j = {}
+  try { j = JSON.parse(r.stdout) } catch { /* checked */ }
+  check('revoke by number --json → one POST /revoke, API body on stdout', r.code === 0 && mutations(since(n))[0]?.path === '/api/v1/signing-identities/5/revoke' && j.revoked === true, r.stdout)
+  r = await run(['signing', 'revoke', 'sample', 'chalktally-upload', '--machine', 'MCH-4'])
+  check('revoke without a grant → exit 0, "nothing changed"', r.code === 0 && /MCH-4 had no grant on chalktally-upload; nothing changed/.test(r.stdout), r.stdout)
+  r = await run(['signing', 'grant', 'sample', 'other', '--machine', 'MCH-3'])
+  check('grant as an agent → exit 2 [publication_forbidden] in words', r.code === 2 && /agent tokens can't change signing settings/.test(r.stderr) && /\[publication_forbidden\]/.test(r.stderr), r.stderr)
+  r = await run(['signing', 'revoke', 'sample', 'other', '--machine', 'MCH-99', '--json'])
+  let e = {}
+  try { e = JSON.parse(r.stderr) } catch { /* checked */ }
+  check('revoke of an unknown machine --json → exit 2 {code: not_found, status: 404}', r.code === 2 && e.code === 'not_found' && e.status === 404, r.stderr)
+  n = reqs.length
+  for (const [label, args, re] of [
+    ['grant without --machine', ['signing', 'grant', 'sample', 'chalktally-upload'], /--machine <MCH-n> is required/],
+    ['grant with a malformed --machine', ['signing', 'grant', 'sample', 'chalktally-upload', '--machine', 'box1'], /--machine must be a machine id like MCH-3/],
+    ['revoke without <identity>', ['signing', 'revoke', 'sample'], /usage: qwirq signing revoke <repo> <identity> --machine <MCH-n>/],
+    ['disable without <identity>', ['signing', 'disable', 'sample'], /usage: qwirq signing disable <repo> <identity>/],
+  ]) {
+    r = await run(args)
+    check(`${label} → exit 2 usage`, r.code === 2 && re.test(r.stderr), r.stderr)
+  }
+  check('usage errors sent no request', since(n).length === 0, JSON.stringify(since(n)))
+  n = reqs.length
+  r = await run(['signing', 'disable', 'sample', 'chalktally-upload'])
+  m = mutations(since(n))
+  check('disable → one POST /disable {} and words', r.code === 0 && m.length === 1 && m[0].path === '/api/v1/signing-identities/5/disable' && JSON.stringify(m[0].body) === '{}'
+    && /chalktally-upload is disabled \(revision 8\): signing with it refuses; pins and grants are kept/.test(r.stdout) && /qwirq signing enable sample chalktally-upload/.test(r.stdout), r.stdout)
+  n = reqs.length
+  r = await run(['signing', 'enable', 'sample', 'chalktally-upload'])
+  check('enable → one POST /enable and words', r.code === 0 && mutations(since(n))[0]?.path === '/api/v1/signing-identities/5/enable' && /chalktally-upload is active again \(revision 9\)/.test(r.stdout), r.stdout)
+  r = await run(['signing', 'disable', 'sample', 'other'])
+  check('disable as a non-owner → exit 2 [forbidden], owner words', r.code === 2 && /only a company owner changes signing settings/.test(r.stderr), r.stderr)
+}
+
 // ============ help + transport ============
 {
   let r = await run(['help'])
   check('help lists the signing verbs and their exit codes', /qwirq signing identity create <repo> --name <name> --app <applicationId> --cert <sha256> --secret-prefix <prefix>/.test(r.stdout)
     && /qwirq signing approve <repo> <identity> --cert <sha256>/.test(r.stdout) && /qwirq signing pin <repo> <identity> <channel>/.test(r.stdout)
+    && /qwirq signing grant\|revoke <repo> <identity> --machine <MCH-n>/.test(r.stdout) && /qwirq signing disable\|enable <repo> <identity>/.test(r.stdout)
     && /signing: 0 success; 2 usage, auth, permission \(incl\. publication_forbidden/.test(r.stdout), r.stdout.slice(0, 200))
   r = await run(['signing', 'status', 'sample'], { env: { QWIRQ_API_URL: 'http://127.0.0.1:9' } })
   check('unreachable API → exit 2 [unreachable]', r.code === 2 && /\[unreachable\]/.test(r.stderr), r.stderr)
@@ -193,7 +249,7 @@ const list = (ids) => [200, { identities: ids, updatedAt: AT }]
 
 check('every request carried the bearer token', reqs.every((x) => x.auth === 'Bearer mock'))
 check('no request body ever carried anything but names, app id, prefix, channel and digests',
-  reqs.filter((x) => x.body).every((x) => Object.keys(x.body).every((k) => ['name', 'applicationId', 'certSha256', 'secretPrefix', 'channel'].includes(k))))
+  reqs.filter((x) => x.body).every((x) => Object.keys(x.body).every((k) => ['name', 'applicationId', 'certSha256', 'secretPrefix', 'channel', 'machine'].includes(k))))
 
 server.close()
 out('')

@@ -5,6 +5,8 @@
 //   signing approve <repo> <identity> --cert <sha256> [--json]         approve by restating the digest the import printed
 //   signing pin <repo> <identity> <channel> [--json]                    pin the channel to the approved certificate
 //   signing unpin <repo> <identity> <channel> [--json]                  unpin: the channel's signing refuses until pinned again
+//   signing grant|revoke <repo> <identity> --machine <MCH-n> [--json]  allow / withdraw the box signer machine
+//   signing disable|enable <repo> <identity> [--json]                  stop / resume all signing with the identity
 // <identity> is an identity name or number; the CLI resolves it via GET /projects/<repo>/signing-identities.
 // No key material ever passes through the CLI: only vault entry names (by prefix) and public certificate digests.
 // Exit codes are pipeline-shared's EXIT: 0 ok; 2 usage/auth/permission/not-found/conflict/transport.
@@ -18,6 +20,10 @@ const USAGE = {
   approve: 'qwirq signing approve <repo> <identity> --cert <sha256> [--json]',
   pin: 'qwirq signing pin <repo> <identity> <channel> [--json]',
   unpin: 'qwirq signing unpin <repo> <identity> <channel> [--json]',
+  grant: 'qwirq signing grant <repo> <identity> --machine <MCH-n> [--json]',
+  revoke: 'qwirq signing revoke <repo> <identity> --machine <MCH-n> [--json]',
+  disable: 'qwirq signing disable <repo> <identity> [--json]',
+  enable: 'qwirq signing enable <repo> <identity> [--json]',
 }
 
 export async function signingVerb(positional, flags, io = stdio) {
@@ -30,6 +36,8 @@ export async function signingVerb(positional, flags, io = stdio) {
     if (sub === 'pin' || sub === 'unpin') {
       return await pin(sub, need(rest[0], USAGE[sub]), need(rest[1], USAGE[sub]), channelArg(rest[2], '<channel>', USAGE[sub]), json, io)
     }
+    if (sub === 'grant' || sub === 'revoke') return await grant(sub, need(rest[0], USAGE[sub]), need(rest[1], USAGE[sub]), flags, json, io)
+    if (sub === 'disable' || sub === 'enable') return await toggle(sub, need(rest[0], USAGE[sub]), need(rest[1], USAGE[sub]), json, io)
     throw new UsageError(`usage: ${Object.values(USAGE).join('\n       ')}`)
   } catch (e) {
     return reportSigningError(e, { json, io, repo: rest[0] && sub !== 'identity' ? rest[0] : rest[1] })
@@ -128,6 +136,37 @@ async function pin(sub, repo, ref, channel, json, io) {
   io.out(sub === 'pin'
     ? `${channel} is pinned to ${r.identity.name}'s approved certificate (revision ${r.identity.revision}).`
     : `${channel} is unpinned from ${r.identity.name} (revision ${r.identity.revision}); signing and publication for it refuse until it is pinned again.`)
+  return EXIT.ok
+}
+
+const MID_RE = /^MCH-\d{1,12}$/
+/** `--machine <MCH-n>`: the machine id `qwirq machines` shows. */
+function machineFlag(flags, usage) {
+  const v = flagStr(flags.machine)
+  if (!v) throw new UsageError(`--machine <MCH-n> is required (the signer machine's id). usage: ${usage}`)
+  if (!MID_RE.test(v)) throw new UsageError(`--machine must be a machine id like MCH-3, got "${v}". usage: ${usage}`)
+  return v
+}
+
+async function grant(sub, repo, ref, flags, json, io) {
+  const machine = machineFlag(flags, USAGE[sub])
+  const id = await resolveIdentity(repo, ref)
+  const r = await apiFetch('POST', `/api/v1/signing-identities/${enc(id.qid)}/${sub}`, { body: { machine } })
+  if (json) { printJSON(io, r); return EXIT.ok }
+  if (sub === 'grant') io.out(`${machine} may sign with ${r.identity.name} (grant ${r.grantQID}, revision ${r.identity.revision}).`)
+  else io.out(r.revoked
+    ? `${machine} may no longer sign with ${r.identity.name} (revision ${r.identity.revision}); a signature in flight on it is refused at acceptance.`
+    : `${machine} had no grant on ${r.identity.name}; nothing changed.`)
+  return EXIT.ok
+}
+
+async function toggle(sub, repo, ref, json, io) {
+  const id = await resolveIdentity(repo, ref)
+  const r = await apiFetch('POST', `/api/v1/signing-identities/${enc(id.qid)}/${sub}`, { body: {} })
+  if (json) { printJSON(io, r); return EXIT.ok }
+  io.out(sub === 'disable'
+    ? `${r.identity.name} is disabled (revision ${r.identity.revision}): signing with it refuses; pins and grants are kept. Re-enable: qwirq signing enable ${repo} ${r.identity.name}`
+    : `${r.identity.name} is active again (revision ${r.identity.revision}).`)
   return EXIT.ok
 }
 

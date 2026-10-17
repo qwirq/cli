@@ -160,6 +160,8 @@ const HELP = `qwirq — Knowledge (Texere) + Secrets from the terminal
   qwirq signing approve <repo> <identity> --cert <sha256>   approve its certificate (must equal the imported digest; owner)
   qwirq signing pin <repo> <identity> <channel>     sign <channel> with the approved certificate (owner)
   qwirq signing unpin <repo> <identity> <channel>   stop signing <channel> (its releases refuse until pinned again)
+  qwirq signing grant|revoke <repo> <identity> --machine <MCH-n>   allow / withdraw the signer machine (owner)
+  qwirq signing disable|enable <repo> <identity>    stop / resume all signing with the identity (owner)
 
   qwirq data status                 is there an app database for your company yet?
   qwirq data provision              create your company's isolated app database
