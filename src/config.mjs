@@ -43,11 +43,23 @@ export function saveConfig(patch) {
   writeFile({ ...readFile(), ...patch })
 }
 
+// The stored token, resolved at most once per process (D5). A keychain read spawns a helper process
+// (PowerShell + DPAPI on Windows, ~0.5-1 s), and every API request asks for the token, so a polling
+// verb (`jobs logs --follow`, `watch`) re-paid that cost on every poll. undefined = not read yet;
+// null = read, nothing stored. writeToken/clearConfig update it, so a login or logout inside the
+// same process is seen at once. QWIRQ_TOKEN is never cached: the env override always wins.
+let storedToken
+
 // Resolve the auth token: explicit env override > OS keychain > legacy plaintext in config.json.
 // If a legacy plaintext token is found and a keychain is available, migrate it transparently and
 // strip the plaintext copy, so the upgrade hardens existing installs on their next command.
 export function readToken() {
   if (process.env.QWIRQ_TOKEN) return process.env.QWIRQ_TOKEN
+  if (storedToken === undefined) storedToken = readStoredToken()
+  return storedToken
+}
+
+function readStoredToken() {
   const f = readFile()
   if (f.tokenStore === 'keychain') {
     const v = keychainRead()
@@ -63,6 +75,7 @@ export function readToken() {
 // Store the token as safely as the platform allows: OS keychain first, else the 0600 config file.
 // Returns the backend name (e.g. "Windows DPAPI") on keychain success, or null on file fallback.
 export function writeToken(token) {
+  storedToken = token
   const backend = keychainStore(token)
   const f = readFile()
   if (backend) {
@@ -83,6 +96,7 @@ export function writeToken(token) {
 // an explicit endpoint override (a platform dev pointed at localhost, a self-hoster) must survive a
 // logout. Keep any endpoint keys that were set; remove the file entirely if nothing else remains.
 export function clearConfig() {
+  storedToken = null
   const f = readFile()
   if (f.tokenStore === 'keychain') keychainClear()
   const keep = {}
