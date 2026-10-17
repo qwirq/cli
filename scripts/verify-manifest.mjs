@@ -49,7 +49,7 @@ check('ensureModeline is idempotent', ensureModeline(withLine, 'y') === withLine
 // schema file is loadable + well-formed.
 check('bundled schema loads + has $id', typeof loadSchema().$id === 'string')
 
-// M0 pipeline (vendored @qwirq/manifest 0.4.0: dist/pipeline.js + schema `pipeline`).
+// M0 pipeline shapes (vendored @qwirq/manifest 0.5.0 still plans them byte-identically).
 const IMAGE = 'node:20-bookworm-slim@sha256:' + 'a'.repeat(64)
 const pipelineOnly = `id: sample
 name: Sample

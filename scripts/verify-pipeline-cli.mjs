@@ -585,7 +585,7 @@ else {
   check('unreachable API → exit 2 + [unreachable]', r.code === 2 && /\[unreachable\]/.test(r.stderr), r.stderr)
 }
 
-// ============ qwirq validate plans pipelines (vendored @qwirq/manifest 0.4.0) ============
+// ============ qwirq validate plans pipelines (vendored @qwirq/manifest 0.5.0) ============
 {
   const dir = mkdtempSync(join(tmpdir(), 'qwirq-wp8-yaml-'))
   const img = 'node:20-bookworm-slim@sha256:' + 'a'.repeat(64)
@@ -599,7 +599,21 @@ else {
   r = await run(['validate', '--file', join(dir, 'cycle.yaml')])
   check('validate: dependency cycle caught [dependency_cycle]', r.code === 1 && /\[dependency_cycle\]/.test(r.stderr), r.stderr)
   r = await run(['validate', '--file', join(dir, 'net.yaml')])
-  check('validate: network egress rejected (M0 = none only)', r.code === 1 && /network/.test(r.stderr), r.stderr)
+  check('validate: unknown network profile rejected (none|services|dependencies only)', r.code === 1 && /network/.test(r.stderr), r.stderr)
+  // 0.5.0 grammar through the real binary: services + caches + reports + a 3-way matrix plan as 4 checks;
+  // an image whose digest is not 64 hex (an unresolved pin) is refused, never planned.
+  const svc = `      services:\n        db:\n          image: postgres:17-bookworm@sha256:${'b'.repeat(64)}\n          env: { POSTGRES_PASSWORD: x }\n` +
+    `          ready: { command: [pg_isready], intervalSeconds: 1, timeoutSeconds: 1, attempts: 5 }\n          limits: { memoryMb: 256, cpus: 0.5, pids: 64 }\n` +
+    `      caches:\n        - { name: npm, path: /cache/npm, inputs: [package-lock.json] }\n` +
+    `      reports:\n        - { name: out, paths: [out], when: always, retentionDays: 14 }\n`
+  const v05 = chk('test').replace('      steps:', `${svc}      steps:`).replace('run: [node, t.mjs]', 'run: [npm, ci]\n          network: dependencies') +
+    chk('e2e').replace('      steps:', '      matrix: { shard: [1, 2, 3] }\n      failFast: false\n      on: { events: [pull_request], paths: [web/**] }\n      steps:')
+  writeFileSync(join(dir, 'v05.yaml'), yaml(v05))
+  writeFileSync(join(dir, 'unpinned.yaml'), yaml(v05.replace(img, 'node@sha256:UNRESOLVED')))
+  r = await run(['validate', '--file', join(dir, 'v05.yaml')])
+  check('validate: 0.5.0 services/caches/reports/matrix manifest is valid (pipeline: 4 checks)', r.code === 0 && /valid \(pipeline: 4 checks\)/.test(r.stdout), r.stdout + r.stderr)
+  r = await run(['validate', '--file', join(dir, 'unpinned.yaml')])
+  check('validate: unresolved image digest refused (not digest-pinned)', r.code === 1 && /not digest-pinned/.test(r.stderr), r.stderr)
 }
 
 server.close()
