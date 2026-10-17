@@ -23,6 +23,7 @@ const RESERVED_SERVICE = /^(?:localhost$|qwirq)/;
 const MATRIX_TOKEN = /\$\{matrix\.([^}]*)\}/g;
 const NAME_RE = new RegExp(loadSchema().$defs.pipelineName.pattern);
 const NAME_MAX = loadSchema().$defs.pipelineName.maxLength;
+const ENV_MAX = loadSchema().$defs.pipelineEnv.maxProperties;
 const dedupe = (xs) => [...new Set(xs ?? [])];
 const sortedMap = (o) => Object.fromEntries(Object.keys(o ?? {}).sort().map((k) => [k, o[k]]));
 /** Schema defaults for an object node's properties (the schema is the one home of every default). */
@@ -152,6 +153,9 @@ function checkSpecFields(f, at, bad, matrixAxes, jobEnv) {
             tokens(v, `${sat}.env.${k}`);
         if (s.network === 'services' && !hasServices)
             bad(`${sat}.network`, 'network "services" needs at least one service declared on the check');
+        const merged = Object.keys({ ...jobEnv, ...s.env }).length;
+        if (jobEnv && merged > ENV_MAX)
+            bad(`${sat}.env`, `check env and step env merge to ${merged} variables; at most ${ENV_MAX} per step`);
     });
     const artifactNames = new Set();
     (f.outputs ?? []).forEach((o, j) => {
@@ -337,7 +341,9 @@ export function analyzeChecks(m) {
     if (issues.length)
         return { issues, jobs: [] };
     const d = D();
-    const jobs = checks.flatMap((c) => children.get(c.name).map(({ name, values }) => {
+    const origin = []; // job index -> authored check index
+    const jobs = checks.flatMap((c, ci) => children.get(c.name).map(({ name, values }) => {
+        origin.push(ci);
         const sub = (s) => (values ? substitute(s, values) : s);
         const subEnv = (e) => e && Object.fromEntries(Object.entries(e).map(([k, v]) => [k, sub(v)]));
         const spec = canonSpec(c.adapter, c.image, {
@@ -355,7 +361,27 @@ export function analyzeChecks(m) {
             ...(values ? { matrix: { group: c.name, values: sortedMap(values), failFast: c.failFast ?? d.failFast } } : {}),
         };
     }));
+    // The expanded, merged plan must satisfy the engine contract exactly (substitution can lengthen strings;
+    // merging can grow maps). Any residual issue is reported at the authored path, never as jobs[i].
+    const engine = normalizeJobPlans(jobs);
+    if (!engine.ok)
+        return { issues: engine.issues.map((i) => toAuthoring(i, checks, jobs, origin)), jobs: [] };
     return { issues, jobs, ...(tr !== undefined && tr !== DEFAULT_TARGET_REF ? { targetRef: tr } : {}) };
+}
+/** Map an engine-contract issue on expanded job i back to the authored check that produced it. */
+function toAuthoring(i, checks, jobs, origin) {
+    const m = /^jobs\[(\d+)\](?:\.spec)?(.*)$/.exec(i.path);
+    if (!m)
+        return i;
+    const k = origin[Number(m[1])];
+    let rest = m[2];
+    const env = /^\.steps\[(\d+)\]\.env\.([^.]+)$/.exec(rest);
+    if (env && !(env[2] in (checks[k].steps[Number(env[1])].env ?? {})))
+        rest = `.env.${env[2]}`; // inherited from the check env
+    const path = `pipeline.checks[${k}]${rest}`;
+    const job = jobs[Number(m[1])].name;
+    const suffix = job !== checks[k].name ? ` (in expanded job "${job}")` : '';
+    return { code: i.code, path, message: `${path}${i.message.slice(i.path.length)}${suffix}` };
 }
 // ------------------------------------------------------------------ engine contract: JobPlan[] -> canonical
 /**

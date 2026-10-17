@@ -10,6 +10,11 @@ export const IMAGE_PATTERN_SOURCE = loadSchema().properties.pipeline.properties.
 export const IMAGE_MAX_LENGTH = loadSchema().properties.pipeline.properties.checks.items.properties.image.maxLength;
 const IMAGE_RE = new RegExp(IMAGE_PATTERN_SOURCE);
 export const isPinnedImage = (v) => typeof v === 'string' && v.length <= IMAGE_MAX_LENGTH && IMAGE_RE.test(v);
+/** Release channel names, ^[a-z][a-z0-9-]{0,31}$. One home: the schema's $defs.channelName; lib/releases
+ *  and lib/secrets import this instead of restating it. */
+export const CHANNEL_NAME_PATTERN_SOURCE = loadSchema().$defs.channelName.pattern;
+const CHANNEL_RE = new RegExp(CHANNEL_NAME_PATTERN_SOURCE);
+export const isChannelName = (v) => typeof v === 'string' && CHANNEL_RE.test(v);
 const ADAPTER_FIELD = /(?:^pipeline\.checks\[\d+\]|^pipeline\.builds\[\d+\]|^jobs\[\d+\]\.spec)\.adapter$/;
 const NETWORK_FIELD = /(?:^pipeline\.checks\[\d+\]|^jobs\[\d+\]\.spec)\.steps\[\d+\]\.network$/;
 const PLATFORM_FIELD = /^releases\.channels\[\d+\]\.platform$/;

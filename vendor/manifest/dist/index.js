@@ -11,7 +11,7 @@
 export * from './types.js';
 export { SCHEMA_URL, loadSchema, parseManifestText, validateManifest, warnManifest, readManifest, isPipelineOnly, checkManifest, checkSchemaNode } from './validate.js';
 export { containerName, manifestToInstanceApp } from './registry.js';
-export { IMAGE_PATTERN_SOURCE, IMAGE_MAX_LENGTH, isPinnedImage, containedPath, DEFAULT_TARGET_REF, validBranchRef, normalizeGlob, matchPathGlob, classifySchemaIssue, } from './grammar.js';
+export { IMAGE_PATTERN_SOURCE, IMAGE_MAX_LENGTH, isPinnedImage, containedPath, DEFAULT_TARGET_REF, validBranchRef, normalizeGlob, matchPathGlob, classifySchemaIssue, CHANNEL_NAME_PATTERN_SOURCE, isChannelName, } from './grammar.js';
 export { MAX_JOBS, matrixJobName, evaluateTrigger, normalizeJobPlans } from './pipeline.js';
 export { planPipeline, planBuilds } from './plan.js';
 export { DEFAULT_ARCHITECTURES } from './builds.js';

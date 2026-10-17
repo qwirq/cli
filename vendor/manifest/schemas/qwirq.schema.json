@@ -512,7 +512,7 @@
       "additionalProperties": false,
       "required": ["name", "platform", "build"],
       "properties": {
-        "name": { "$ref": "#/$defs/pipelineName", "description": "Channel name, unique per platform, e.g. internal, production." },
+        "name": { "$ref": "#/$defs/channelName", "description": "Channel name, unique per platform, e.g. internal, production." },
         "platform": { "type": "string", "enum": ["android"] },
         "build": { "$ref": "#/$defs/pipelineName", "description": "The android-apk build target whose signed APKs this channel publishes." },
         "content": { "$ref": "#/$defs/pipelineName", "description": "M3: the expo-update target whose content this channel publishes; its native target must be build." },
@@ -520,6 +520,13 @@
         "autoPublish": { "type": "boolean", "default": false, "description": "Desire: publish verified main builds automatically. Takes effect only through an owner-enabled rule; never unpauses an owner pause." },
         "audience": { "type": "string", "enum": ["members", "key"], "default": "members", "description": "Desire: who may install. members = signed-in repository readers; key = also holders of the channel key. Public access is not configurable from source." }
       }
+    },
+    "channelName": {
+      "type": "string",
+      "maxLength": 32,
+      "pattern": "^[a-z][a-z0-9-]{0,31}$",
+      "x-patternMessage": "is not a channel name: a lowercase letter, then lowercase letters, digits or -, at most 32 characters",
+      "description": "Release channel name; the one grammar shared by lib/releases (channels) and lib/secrets (signing pins)."
     },
     "sha256": {
       "type": "string",

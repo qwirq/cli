@@ -20,5 +20,5 @@ runtime.
 
 To refresh: rebuild `lib/manifest` (`npm run build`) and re-copy `dist/*.js` + `schemas/*.json` here.
 Source of truth stays `lib/manifest`; this is a packaging mirror for the public install path only.
-0.5.0 copied from `lib/manifest` @ 410cbf3 (`m1m2/manifest-05`, not yet published).
+0.5.0 copied from `lib/manifest` @ 031a592 (`m1m2/manifest-05`, not yet published).
 
