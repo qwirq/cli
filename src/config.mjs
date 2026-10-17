@@ -2,7 +2,7 @@
 // The auth TOKEN is kept out of that file and stored in the OS keychain (see keychain.mjs); the file
 // only records a `tokenStore: 'keychain'` marker. Older installs that wrote the token inline are
 // still read, and migrated into the keychain on first use. Env overrides (dev / CI / isolation):
-// QWIRQ_HOME (config dir), QWIRQ_API_URL, QWIRQ_AUTH_URL, QWIRQ_GIT_URL, QWIRQ_TOKEN.
+// QWIRQ_HOME (config dir), QWIRQ_API_URL, QWIRQ_AUTH_URL, QWIRQ_GIT_URL, QWIRQ_NPM_REGISTRY_URL, QWIRQ_TOKEN.
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { mkdirSync, readFileSync, writeFileSync, rmSync, existsSync } from 'node:fs'
@@ -36,7 +36,31 @@ export function loadConfig() {
     apiBase: process.env.QWIRQ_API_URL || f.apiBase || DEFAULTS.apiBase,
     gitBase: process.env.QWIRQ_GIT_URL || f.gitBase || DEFAULTS.gitBase,
     company: f.company || null,
+    // The instance's npm registry for @qwirq/* (`qwirq init` writes it into .npmrc). No default: a
+    // customer project must never silently point at another tenant's registry, GitHub or public npm.
+    npmRegistryUrl: process.env.QWIRQ_NPM_REGISTRY_URL || f.npmRegistryUrl || null,
+    npmRegistrySource: process.env.QWIRQ_NPM_REGISTRY_URL ? 'QWIRQ_NPM_REGISTRY_URL' : f.npmRegistryUrl ? file() : null,
   }
+}
+
+// Validate an npm registry endpoint: an absolute https URL with no credentials, query or fragment
+// (it is written verbatim into a project's .npmrc, which gets committed). Returns { url } normalized
+// to a trailing slash, or { error }.
+export function checkRegistryUrl(raw) {
+  const s = String(raw ?? '')
+  if (!s || /[\s\x00-\x1f\x7f]/.test(s)) return { error: 'must be a single absolute https URL (no spaces or control characters)' }
+  let u
+  try { u = new URL(s) } catch { return { error: 'not an absolute URL' } }
+  if (u.protocol !== 'https:') return { error: 'must use https://' }
+  if (u.username || u.password) return { error: 'must not contain credentials (authenticate in your user npm config instead)' }
+  if (u.search || u.hash) return { error: 'must not contain a query or fragment' }
+  return { url: u.origin + (u.pathname.endsWith('/') ? u.pathname : u.pathname + '/') }
+}
+
+// A registry value safe to echo in an error: userinfo, query and fragment (where a token could hide)
+// are masked.
+export function redactUrl(raw) {
+  return String(raw ?? '').replace(/\/\/[^/@\s]*@/, '//***@').replace(/[?#].*$/, (m) => m[0] + '***')
 }
 
 export function saveConfig(patch) {
@@ -90,7 +114,8 @@ export function writeToken(token) {
   return null
 }
 
-// Log out: drop ONLY the auth identity (token + active company), never the endpoints (#98).
+// Log out: drop ONLY the auth identity (token + active company), never the endpoints (#98), including
+// npmRegistryUrl.
 // Wiping the whole file used to strip authBase/apiBase/gitBase too, so after a logout every command
 // (including `login`) fell back to defaults — which is now harmless since the defaults are prod, but
 // an explicit endpoint override (a platform dev pointed at localhost, a self-hoster) must survive a
@@ -100,7 +125,7 @@ export function clearConfig() {
   const f = readFile()
   if (f.tokenStore === 'keychain') keychainClear()
   const keep = {}
-  for (const k of ['authBase', 'apiBase', 'gitBase']) if (f[k] !== undefined) keep[k] = f[k]
+  for (const k of ['authBase', 'apiBase', 'gitBase', 'npmRegistryUrl']) if (f[k] !== undefined) keep[k] = f[k]
   if (Object.keys(keep).length) writeFile(keep)
   else if (existsSync(file())) rmSync(file())
 }

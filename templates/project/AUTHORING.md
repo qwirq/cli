@@ -8,9 +8,16 @@ TypeScript over those typed packages.
 ## The local loop
 
 ```sh
-npm install          # pulls @qwirq/* from GitHub Packages (.npmrc + a read:packages token)
+npm login --scope=@qwirq --registry=<your registry URL>   # once per machine
+npm install          # pulls @qwirq/* from your instance's npm registry (.npmrc)
 qwirq dev            # binds your dev app DB (QWIRQ_DB_URL) and runs `npm run dev`
 ```
+
+`.npmrc` names only where `@qwirq/*` comes from: your QWIRQ instance's npm registry, the URL `qwirq init`
+took from `qwirq config set npm-registry <url>` (or `QWIRQ_NPM_REGISTRY_URL`). It holds no credentials and
+is safe to commit. Authenticate outside the project: `npm login --scope=@qwirq --registry=<url>` writes a
+registry-scoped token to your user `~/.npmrc`; in CI, inject it as a secret into the runner's user npm
+config (e.g. `//<registry host>/<path>/:_authToken=${NPM_TOKEN}`), never into the repository.
 
 `qwirq dev` resolves a dev app-DB connection from the vault secret `__NAME___dev_db_url` (override with
 `qwirq dev --db <secret>` or by setting `QWIRQ_DB_URL` yourself), then runs your `dev` script with it

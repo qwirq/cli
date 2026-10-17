@@ -6,7 +6,7 @@ import { join, resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { apiFetch, appCall, authFetch } from '../src/api.mjs'
 import { login } from '../src/login.mjs'
-import { loadConfig, clearConfig, readToken } from '../src/config.mjs'
+import { loadConfig, saveConfig, clearConfig, readToken, checkRegistryUrl, redactUrl } from '../src/config.mjs'
 import { parseArgs, asList, parseKeyVals, out, err, fail, readStdin, promptHidden, promptYesNo, copyToClipboard, editInEditor } from '../src/util.mjs'
 import { parseManifestText, validateManifest, planPipeline, writeLocalSchema, ensureModeline, LOCAL_SCHEMA_REL, SCHEMA_URL } from '../src/manifest.mjs'
 import { jobsVerb } from '../src/verbs/jobs.mjs'
@@ -52,6 +52,11 @@ const HELP = `qwirq — Knowledge (Texere) + Secrets from the terminal
   qwirq login [--no-browser]        sign in (device flow)
   qwirq logout                      forget the stored token
   qwirq whoami                      show user + active company
+  qwirq --version | -v              print the CLI version
+
+  qwirq config set npm-registry <url>   your instance's npm registry for @qwirq/* (https; used by init)
+  qwirq config get npm-registry     show it (and where it comes from)
+  qwirq config unset npm-registry   forget it
 
   qwirq weave ls                    list weaves (🔒 = restricted)
   qwirq weave new <name>            create a weave
@@ -100,7 +105,8 @@ const HELP = `qwirq — Knowledge (Texere) + Secrets from the terminal
   qwirq group add <name> <email>    add a member to a group (admin)
   qwirq group rm <name> <email>     remove a member from a group (admin)
 
-  qwirq init <name>                 scaffold a QWIRQ app (qwirq.yaml + React UI + @qwirq/tasks/cmdb)
+  qwirq init <name>                 scaffold a QWIRQ app (qwirq.yaml + React UI + @qwirq/tasks/cmdb);
+                                    needs your instance's npm registry (qwirq config set npm-registry)
   qwirq validate [--file <f>]       validate qwirq.yaml against the manifest schema (default: ./qwirq.yaml)
   qwirq schema [--url]              add editor validation: write .qwirq/qwirq.schema.json + a $schema line
                                     to qwirq.yaml (use --url to point at the public schema URL instead)
@@ -407,13 +413,17 @@ async function main() {
   const group = argv[0]
   const { positional, flags } = parseArgs(argv.slice(1))
 
+  if (group === '--version' || group === '-v') {
+    out(JSON.parse(readFileSync(join(here, '..', 'package.json'), 'utf8')).version)
+    return
+  }
   if (!group || group === 'help' || flags.help || group === '--help') { out(HELP); return }
 
   // Identity-assertion guard (#148, FRICTION-9): `--as <email>` verifies the ambient session actually
   // resolves to that identity before running anything, and REFUSES on a mismatch, so a script can never
   // silently mis-attribute a write to whoever happens to be signed in. Opt-in; skipped for local /
   // no-session commands and the git credential-helper (whose stdout is a strict protocol).
-  const NO_IDENTITY = new Set(['login', 'logout', 'credential-helper', 'git', 'validate', 'schema', 'init', 'clone'])
+  const NO_IDENTITY = new Set(['login', 'logout', 'credential-helper', 'git', 'validate', 'schema', 'init', 'clone', 'config'])
   if (typeof flags.as === 'string' && flags.as.trim() && !NO_IDENTITY.has(group)) {
     const expected = flags.as.trim().toLowerCase()
     let me
@@ -430,6 +440,29 @@ async function main() {
     case 'login': return login({ noBrowser: !!flags['no-browser'] })
 
     case 'logout': { clearConfig(); out('Signed out.'); return }
+
+    case 'config': {
+      // Local CLI settings (not secrets). Only the npm registry so far; endpoints use env/config.json.
+      const [sub, key, value] = positional
+      const usage = 'usage: qwirq config <set|get|unset> npm-registry [<url>]'
+      if (key !== 'npm-registry') return fail(usage)
+      if (sub === 'set') {
+        const reg = checkRegistryUrl(value)
+        if (reg.error) return fail(`npm registry "${redactUrl(value)}" ${reg.error}`)
+        saveConfig({ npmRegistryUrl: reg.url })
+        out(`npm registry: ${reg.url}`)
+        if (process.env.QWIRQ_NPM_REGISTRY_URL) err('note: QWIRQ_NPM_REGISTRY_URL is set and overrides this')
+        return
+      }
+      if (sub === 'get') {
+        const cfg = loadConfig()
+        if (!cfg.npmRegistryUrl) return fail('no npm registry configured (qwirq config set npm-registry <url>)')
+        out(`${cfg.npmRegistryUrl}  (from ${cfg.npmRegistrySource})`)
+        return
+      }
+      if (sub === 'unset') { saveConfig({ npmRegistryUrl: undefined }); out('npm registry: unset'); return }
+      return fail(usage)
+    }
 
     case 'credential-helper': {
       // git credential helper: on `get`, hand git our stored PAT for the qwirq git host.
@@ -694,6 +727,21 @@ async function main() {
       if (!/^[a-z][a-z0-9-]*$/.test(name)) return fail('name must be kebab-case (a-z, 0-9, -) starting with a letter')
       const dest = resolve(process.cwd(), name)
       if (existsSync(dest)) return fail(`${name}/ already exists`)
+      // The project's .npmrc points @qwirq at the selected instance's npm registry, resolved from
+      // explicit config (QWIRQ_NPM_REGISTRY_URL > npmRegistryUrl in config.json). The API advertises
+      // no registry yet, so there is no discovery step. Unresolved or invalid: fail before writing
+      // anything. Never a fallback (GitHub, another tenant's registry, public npm).
+      const cfg = loadConfig()
+      if (!cfg.npmRegistryUrl) {
+        return fail([
+          `no npm registry is configured for your QWIRQ instance (${cfg.apiBase}), so the new project's`,
+          `@qwirq/* packages would have nowhere to come from. Nothing was created. Set it, then re-run:`,
+          `  qwirq config set npm-registry https://<your instance's npm registry>/`,
+          `  (or set QWIRQ_NPM_REGISTRY_URL). Your QWIRQ admin has the URL.`,
+        ].join('\n'))
+      }
+      const reg = checkRegistryUrl(cfg.npmRegistryUrl)
+      if (reg.error) return fail(`npm registry "${redactUrl(cfg.npmRegistryUrl)}" (from ${cfg.npmRegistrySource}) ${reg.error}. Nothing was created. Fix it with: qwirq config set npm-registry <https URL>`)
       const tplRoot = join(here, '..', 'templates', 'project')
       const RENAME = { _npmrc: '.npmrc', _gitignore: '.gitignore' }
       const walk = (srcDir, dstDir) => {
@@ -702,7 +750,7 @@ async function main() {
           const src = join(srcDir, e.name)
           const dst = join(dstDir, RENAME[e.name] ?? e.name)
           if (e.isDirectory()) walk(src, dst)
-          else writeFileSync(dst, readFileSync(src, 'utf8').split('__NAME__').join(name))
+          else writeFileSync(dst, readFileSync(src, 'utf8').split('__NAME__').join(name).split('__QWIRQ_NPM_REGISTRY_URL__').join(reg.url))
         }
       }
       walk(tplRoot, dest)
@@ -714,7 +762,8 @@ async function main() {
       out(`Scaffolded ${name}/  (qwirq.yaml + a React app + @qwirq/tasks/@qwirq/cmdb on the app DB)`)
       out('next:')
       out(`  cd ${name}`)
-      out('  npm install        # pulls @qwirq/* (needs a read:packages token in your .npmrc)')
+      out(`  npm login --scope=@qwirq --registry=${reg.url}   # once per machine; the token goes in your user ~/.npmrc, never the project`)
+      out(`  npm install        # pulls @qwirq/* from ${reg.url}`)
       out('  qwirq dev          # binds a dev app DB and runs it')
       return
     }
