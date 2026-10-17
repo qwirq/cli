@@ -1,8 +1,9 @@
 # vendored: @qwirq/manifest@0.4.0
 
 This is a **vendored copy** of `@qwirq/manifest@0.4.0` (`dist/` runtime + `schemas/`), inlined so the
-public `qwirq/cli` installs from a clean machine with **no `@qwirq:registry` override and no GitHub
-Packages token**. `@qwirq/manifest` is gated (GitHub Packages only); a published `dependencies` entry on
+public `qwirq/cli` installs from a clean machine with **no `@qwirq:registry` override and no registry
+token**. `@qwirq/manifest` is gated (private registry: 0.4.0 lives on registry.qwirq.com, older versions on
+GitHub Packages); a published `dependencies` entry on
 it 404s for any client running `npm i -g github:qwirq/cli` (#166).
 
 Runtime footprint is gated-dep-free: the `dist/*.js` import only `yaml` (public) + node builtins. The
