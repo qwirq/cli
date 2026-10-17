@@ -1,6 +1,6 @@
 // Verifies the qwirq.yaml manifest validator (#44 / DX-5) against the bundled schema. Pure, offline.
 //   node scripts/verify-manifest.mjs
-import { parseManifestText, validateManifest, ensureModeline, loadSchema } from '../src/manifest.mjs'
+import { parseManifestText, validateManifest, planPipeline, ensureModeline, loadSchema } from '../src/manifest.mjs'
 
 let fail = 0
 const check = (label, cond, detail = '') => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${label}${detail ? '  — ' + detail : ''}`); if (!cond) fail++ }
@@ -48,6 +48,29 @@ check('ensureModeline is idempotent', ensureModeline(withLine, 'y') === withLine
 
 // schema file is loadable + well-formed.
 check('bundled schema loads + has $id', typeof loadSchema().$id === 'string')
+
+// M0 pipeline (vendored @qwirq/manifest 0.4.0: dist/pipeline.js + schema `pipeline`).
+const IMAGE = 'node:20-bookworm-slim@sha256:' + 'a'.repeat(64)
+const pipelineOnly = `id: sample
+name: Sample
+pipeline:
+  checks:
+    - name: test
+      adapter: command
+      image: ${IMAGE}
+      labels: [linux]
+      steps:
+        - { name: test, run: [node, test.mjs], network: none }
+`
+const po = parseManifestText(pipelineOnly)
+check('pipeline-only manifest validates without provides', validateManifest(po).length === 0, validateManifest(po).join(' | '))
+const plan = planPipeline(po)
+check('planPipeline -> one canonical JobPlan (defaults filled)', plan.ok && plan.jobs.length === 1 && plan.jobs[0].spec.limits.seconds === 1800 && plan.jobs[0].required === true, JSON.stringify(plan))
+check('schema declares pipeline', !!loadSchema().properties?.pipeline)
+const neither = validateManifest(parseManifestText('id: ok\nname: X'))
+check('neither provides nor pipeline -> error', neither.some((e) => /provides/.test(e) && /pipeline/.test(e)), neither.join(' | '))
+const badAdapter = planPipeline(parseManifestText(pipelineOnly.replace('adapter: command', 'adapter: gradle')))
+check('unknown adapter -> adapter_unknown', !badAdapter.ok && badAdapter.issues.some((i) => i.code === 'adapter_unknown'), JSON.stringify(badAdapter))
 
 console.log('')
 console.log(fail === 0 ? 'ALL PASS' : `${fail} FAILED`)

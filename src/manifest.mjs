@@ -1,5 +1,5 @@
 // qwirq.yaml manifest — the CLI's thin adapter over @qwirq/manifest (#93). The parse/validate logic and
-// the JSON Schema live ONCE in the shared package (deps-free JS build, 0.3.0). Because that package is
+// the JSON Schema live ONCE in the shared package (deps-free JS build, 0.4.0). Because that package is
 // gated (GitHub Packages only) and the public CLI must install from a clean machine (`npm i -g
 // github:qwirq/cli`, #166), the runtime + schema are VENDORED into ./vendor/manifest (see its README).
 // The CLI re-exports the parse/validate surface from the vendored copy and keeps only the CLI-specific
@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
 // Single source of truth: the shared parser/validator + the canonical schema URL ($id), vendored.
-export { parseManifestText, validateManifest, loadSchema, SCHEMA_URL } from '../vendor/manifest/dist/index.js'
+export { parseManifestText, validateManifest, loadSchema, planPipeline, SCHEMA_URL } from '../vendor/manifest/dist/index.js'
 
 // The bundled JSON Schema ships alongside the vendored runtime (vendor/manifest/schemas) so `qwirq schema`
 // can copy it into a project. Resolved relative to this file, not via require.resolve on a gated package.

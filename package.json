@@ -1,6 +1,6 @@
 {
   "name": "@qwirq/cli",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "type": "module",
   "bin": {
     "qwirq": "bin/qwirq.mjs"
@@ -24,7 +24,8 @@
     "verify:agents-cli": "node scripts/verify-agents-cli.mjs",
     "verify:workplan-scrum": "node scripts/verify-workplan-scrum.mjs",
     "verify:error-path": "node scripts/verify-error-path.mjs",
-    "verify:identity-guard": "node scripts/verify-identity-guard.mjs"
+    "verify:identity-guard": "node scripts/verify-identity-guard.mjs",
+    "verify:pipeline-cli": "node scripts/verify-pipeline-cli.mjs"
   },
   "dependencies": {
     "yaml": "^2.4.5"

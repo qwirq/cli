@@ -8,7 +8,10 @@ import { apiFetch, appCall, authFetch } from '../src/api.mjs'
 import { login } from '../src/login.mjs'
 import { loadConfig, clearConfig, readToken } from '../src/config.mjs'
 import { parseArgs, asList, parseKeyVals, out, err, fail, readStdin, promptHidden, promptYesNo, copyToClipboard, editInEditor } from '../src/util.mjs'
-import { parseManifestText, validateManifest, writeLocalSchema, ensureModeline, LOCAL_SCHEMA_REL, SCHEMA_URL } from '../src/manifest.mjs'
+import { parseManifestText, validateManifest, planPipeline, writeLocalSchema, ensureModeline, LOCAL_SCHEMA_REL, SCHEMA_URL } from '../src/manifest.mjs'
+import { jobsVerb } from '../src/verbs/jobs.mjs'
+import { watchVerb } from '../src/verbs/watch.mjs'
+import { statusVerb } from '../src/verbs/project-status.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -107,9 +110,20 @@ const HELP = `qwirq — Knowledge (Texere) + Secrets from the terminal
   qwirq repo share <slug> <email|role|group> [--role|--group] [--read|--manage|--own]
   qwirq repo unshare <slug> <email|role|group> [--role|--group]
   qwirq repo grants <slug>          show who a repository is shared with
+  qwirq repo status <slug> [--json]    what the latest push did: checks, counts, what needs you
+  qwirq project status <slug> [--json] same, via the project route
   qwirq project <sub>               (deprecated alias for 'qwirq repo'; use 'qwirq repo' instead)
   qwirq git setup                   let git authenticate to git.qwirq.com with your qwirq login
   qwirq clone <repo>                clone a repository over HTTPS (uses your login, no keys)
+
+  qwirq jobs <repo> [--sha <sha>] [--state <state>] [--json]   pipeline jobs (checks), grouped by commit
+  qwirq jobs show <qid> [--json]    one job: steps, attempts, artifacts, what you can do
+  qwirq jobs logs <qid> --attempt <n> [--follow] [--json]   log lines (--follow keeps reading, NDJSON with --json)
+  qwirq jobs retry <qid> --attempt <n>    queue attempt n+1 (n = the attempt you saw; guards against races)
+  qwirq jobs cancel <qid> --attempt <n>   cancel a queued or running job
+  qwirq watch <repo> [--sha <sha> | --latest] [--json]   watch one push's jobs to the end. Target fixed at
+                                    start: --sha; else your checkout's HEAD (waits up to 2 min for QWIRQ to
+                                    receive it); else / --latest the newest push. Ctrl+C stops watching, never cancels
 
   qwirq data status                 is there an app database for your company yet?
   qwirq data provision              create your company's isolated app database
@@ -183,7 +197,10 @@ Endpoints default to production (auth/api/git .qwirq.com) and can be overridden 
 QWIRQ_API_URL, QWIRQ_GIT_URL. \`qwirq logout\` clears your login but keeps those overrides.
 
 Exit codes (stable, for scripts): 0 success; 1 any error (a message is printed to stderr).
-A \`dev\`/\`types\` run exits with the underlying npm script's code.`
+A \`dev\`/\`types\` run exits with the underlying npm script's code.
+jobs/watch/status: 0 success; 1 a followed job, or a REQUIRED watched job, failed, was cancelled,
+timed out, or (watch) was skipped, or the push was not admitted (optional failures are reported only); 2 usage, auth, permission, not-found, conflict, or connection error
+(stderr carries the stable [code]); 130 stopped with Ctrl+C.`
 
 function indentTree(nodes, depth, lines) {
   for (const n of nodes || []) {
@@ -403,10 +420,15 @@ async function main() {
       return
     }
 
+    case 'jobs': { process.exitCode = await jobsVerb(positional, flags); return }
+
+    case 'watch': { process.exitCode = await watchVerb(positional, flags); return }
+
     case 'repo':
     case 'repository': {
       const sub = positional[0]
       const slug = positional[1]
+      if (sub === 'status') { process.exitCode = await statusVerb('repositories', positional.slice(1), flags); return }
       if (sub === 'ls') {
         const { repositories } = await apiFetch('GET', '/api/v1/repositories')
         if (!repositories.length) { out('(no repositories)'); return }
@@ -467,12 +489,13 @@ async function main() {
         for (const g of grants) out(`${g.permission.padEnd(7)} ${g.userEmail || (g.roleName ? '@' + g.roleName : '#' + g.groupName)}`)
         return
       }
-      return fail('usage: qwirq repo <ls|new|rename|rm|share|unshare|grants>')
+      return fail('usage: qwirq repo <ls|new|rename|rm|share|unshare|grants|status>')
     }
 
     case 'project': {
       const sub = positional[0]
       const slug = positional[1]
+      if (sub === 'status') { process.exitCode = await statusVerb('projects', positional.slice(1), flags); return }
       if (sub === 'ls') {
         const { projects } = await apiFetch('GET', '/api/v1/projects')
         if (!projects.length) { out('(no projects)'); return }
@@ -533,7 +556,7 @@ async function main() {
         for (const g of grants) out(`${g.permission.padEnd(7)} ${g.userEmail || (g.roleName ? '@' + g.roleName : '#' + g.groupName)}`)
         return
       }
-      return fail('usage: qwirq project <ls|new|rename|rm|share|unshare|grants>')
+      return fail('usage: qwirq project <ls|new|rename|rm|share|unshare|grants|status>')
     }
 
     case 'data': {
@@ -652,6 +675,13 @@ async function main() {
       let value
       try { value = parseManifestText(text) } catch (e) { return fail(e.message) }
       const errors = validateManifest(value)
+      // A schema-valid pipeline can still be wrong in ways a schema can't say (duplicate check names,
+      // unknown or cyclic needs, paths escaping the workspace): plan it the way the engine will (M0).
+      if (!errors.length && value && typeof value === 'object' && value.pipeline !== undefined) {
+        const plan = planPipeline(value)
+        if (!plan.ok) for (const i of plan.issues) errors.push(`${i.path && !i.message.startsWith(i.path) ? i.path + ': ' : ''}${i.message} [${i.code}]`)
+        else if (!errors.length) { out(`${file} is valid (pipeline: ${plan.jobs.length} check${plan.jobs.length === 1 ? '' : 's'}).`); return }
+      }
       if (!errors.length) { out(`${file} is valid.`); return }
       err(`${file} has ${errors.length} problem${errors.length === 1 ? '' : 's'}:`)
       for (const e of errors) err(`  - ${e}`)
