@@ -1,13 +1,35 @@
 # @qwirq/cli
 
-`qwirq` — work with QWIRQ **Knowledge (Texere)** and **Secrets** from the terminal. A zero-dependency
-Node CLI (Node 18+) over [`@qwirq/api`](../api). Auth is the device flow: `qwirq login` opens a
+`qwirq` — work with QWIRQ **Knowledge (Texere)** and **Secrets** from the terminal. A Node CLI
+(Node 18+; one runtime dependency, `yaml`) over the QWIRQ API. Auth is the device flow: `qwirq login` opens a
 browser, you approve, and a personal access token is stored in `~/.qwirq/config.json` (0600).
+
+## Install
+
+From the GitHub release tarball (Node 18+; the only runtime dependency, `yaml`, comes from npmjs):
+
+```
+npm install -g https://github.com/qwirq/cli/releases/download/v0.15.0/qwirq-cli-0.15.0.tgz
+qwirq help
+```
+
+Each release also carries the source as `.tar.gz`/`.zip` and a `SHA256SUMS` file. To check before
+installing:
+
+```
+curl -fsSLO https://github.com/qwirq/cli/releases/download/v0.15.0/qwirq-cli-0.15.0.tgz
+curl -fsSLO https://github.com/qwirq/cli/releases/download/v0.15.0/SHA256SUMS
+grep 'qwirq-cli-0.15.0.tgz$' SHA256SUMS | sha256sum -c -
+npm install -g ./qwirq-cli-0.15.0.tgz
+```
+
+Not yet on the public npm registry (`npm install -g @qwirq/cli` will not work until it is).
 
 ## Install (dev)
 
 ```
-cd apps/cli
+git clone https://github.com/qwirq/cli.git && cd cli
+npm install
 npm link            # puts `qwirq` on PATH
 # or run directly:
 node bin/qwirq.mjs <command>
