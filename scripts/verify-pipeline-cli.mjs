@@ -105,6 +105,27 @@ const logPage = (attempt, lines, { hasMore = false, terminal = false, truncated 
   check('jobs <repo> --json prints the response as JSON', JSON.stringify(JSON.parse(r.stdout)) === JSON.stringify(list))
 }
 
+// ============ WP6 inputs: executor_unsupported in words; inputs_frozen (503) ============
+{
+  const list = {
+    pushes: [push(9, SHA_A, [33])],
+    jobs: [job(33, 'rehearsal', 'queued', 0, { queuedReason: { code: 'executor_unsupported', inputKinds: ['npm', 'repository'], since: AT } })],
+    nextCursor: null, updatedAt: AT,
+  }
+  route = (r) => (r.path === '/api/v1/pipeline/jobs' ? [200, list]
+    : r.path === '/api/v1/pipeline/jobs/33/retry' ? envelope(503, 'inputs_frozen', 'Jobs declaring inputs are frozen by the operator (rollout); try again later.')
+      : envelope(404, 'not_found', 'nope'))
+  let r = await run(['jobs', 'sample'])
+  check('jobs <repo>: executor_unsupported in words, input kinds named', /rehearsal\s+queued \(waiting for a worker that can provide its inputs \(npm packages, repository files\)\)/.test(r.stdout), r.stdout)
+  r = await run(['jobs', 'retry', '33', '--attempt', '1'])
+  check('503 inputs_frozen → exit 2 + plain words + [inputs_frozen]', r.code === 2 &&
+    r.stderr === 'error: checks with inputs are paused by an operator. Try again later. [inputs_frozen]', `exit=${r.code} ${r.stderr}`)
+  r = await run(['jobs', 'retry', '33', '--attempt', '1', '--json'])
+  let e = {}
+  try { e = JSON.parse(r.stderr) } catch { /* checked below */ }
+  check('--json: inputs_frozen envelope (code, status 503)', e.code === 'inputs_frozen' && e.status === 503 && r.code === 2, r.stderr)
+}
+
 // ============ jobs show ============
 {
   const d = detail(job(31, 'test', 'running', 1), [attemptRow(1, 'running')])
@@ -585,7 +606,7 @@ else {
   check('unreachable API → exit 2 + [unreachable]', r.code === 2 && /\[unreachable\]/.test(r.stderr), r.stderr)
 }
 
-// ============ qwirq validate plans pipelines (vendored @qwirq/manifest 0.4.0) ============
+// ============ qwirq validate plans pipelines (vendored @qwirq/manifest 0.6.0) ============
 {
   const dir = mkdtempSync(join(tmpdir(), 'qwirq-wp8-yaml-'))
   const img = 'node:20-bookworm-slim@sha256:' + 'a'.repeat(64)
@@ -599,7 +620,33 @@ else {
   r = await run(['validate', '--file', join(dir, 'cycle.yaml')])
   check('validate: dependency cycle caught [dependency_cycle]', r.code === 1 && /\[dependency_cycle\]/.test(r.stderr), r.stderr)
   r = await run(['validate', '--file', join(dir, 'net.yaml')])
-  check('validate: network egress rejected (M0 = none only)', r.code === 1 && /network/.test(r.stderr), r.stderr)
+  check('validate: unknown network profile rejected (none|services|dependencies only)', r.code === 1 && /network/.test(r.stderr), r.stderr)
+  // 0.5.0 grammar through the real binary: services + caches + reports + a 3-way matrix plan as 4 checks;
+  // an image whose digest is not 64 hex (an unresolved pin) is refused, never planned.
+  const svc = `      services:\n        db:\n          image: postgres:17-bookworm@sha256:${'b'.repeat(64)}\n          env: { POSTGRES_PASSWORD: x }\n` +
+    `          ready: { command: [pg_isready], intervalSeconds: 1, timeoutSeconds: 1, attempts: 5 }\n          limits: { memoryMb: 256, cpus: 0.5, pids: 64 }\n` +
+    `      caches:\n        - { name: npm, path: /cache/npm, inputs: [package-lock.json] }\n` +
+    `      reports:\n        - { name: out, paths: [out], when: always, retentionDays: 14 }\n`
+  const v05 = chk('test').replace('      steps:', `${svc}      steps:`).replace('run: [node, t.mjs]', 'run: [npm, ci]\n          network: dependencies') +
+    chk('e2e').replace('      steps:', '      matrix: { shard: [1, 2, 3] }\n      failFast: false\n      on: { events: [pull_request], paths: [web/**] }\n      steps:')
+  writeFileSync(join(dir, 'v05.yaml'), yaml(v05))
+  writeFileSync(join(dir, 'unpinned.yaml'), yaml(v05.replace(img, 'node@sha256:UNRESOLVED')))
+  r = await run(['validate', '--file', join(dir, 'v05.yaml')])
+  check('validate: 0.5.0 services/caches/reports/matrix manifest is valid (pipeline: 4 checks)', r.code === 0 && /valid \(pipeline: 4 checks\)/.test(r.stdout), r.stdout + r.stderr)
+  r = await run(['validate', '--file', join(dir, 'unpinned.yaml')])
+  check('validate: unresolved image digest refused (not digest-pinned)', r.code === 1 && /not digest-pinned/.test(r.stderr), r.stderr)
+  // 0.6.0 (WP6): a check declaring repository + npm inputs plans; a mutable commit ref is refused
+  const inputs = `      inputs:
+        - { kind: repository, name: core, repository: qwirq/core, commit: ${'e'.repeat(40)}, paths: [supabase/migrations], sha256: ${'c'.repeat(64)} }
+` +
+    `        - { kind: npm, name: npm, lockfile: package-lock.json, sha256: ${'d'.repeat(64)}, privateScopes: ['@qwirq'] }
+`
+  writeFileSync(join(dir, 'v06.yaml'), yaml(chk('rehearsal').replace('      steps:', `${inputs}      steps:`)))
+  writeFileSync(join(dir, 'mutable.yaml'), yaml(chk('rehearsal').replace('      steps:', `${inputs.replace('e'.repeat(40), 'main')}      steps:`)))
+  r = await run(['validate', '--file', join(dir, 'v06.yaml')])
+  check('validate: 0.6.0 check inputs (repository + npm) manifest is valid (pipeline: 1 check)', r.code === 0 && /valid \(pipeline: 1 check\)/.test(r.stdout), r.stdout + r.stderr)
+  r = await run(['validate', '--file', join(dir, 'mutable.yaml')])
+  check('validate: an input pinned to a mutable ref is refused', r.code === 1 && /commit/.test(r.stderr), r.stderr)
 }
 
 server.close()

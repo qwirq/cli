@@ -135,6 +135,14 @@ export function checkManifest(value) {
     check(value, schema, '', out, schema);
     return out;
 }
+/** Validate a value against one node of the bundled schema (a local JSON pointer such as
+ *  '#/$defs/jobPlan'), reporting paths under `basePath`. [] = valid. */
+export function checkSchemaNode(value, pointer, basePath = '') {
+    const out = [];
+    const schema = loadSchema();
+    check(value, resolveRef(schema, pointer), basePath, out, schema);
+    return out;
+}
 /** The built-in icon keys from @qwirq/ui-icon-kit. An icon field value not in this set
  *  and not defined in custom_icons is WARNED (not rejected) — the shell falls back to folder. */
 const BUILTIN_ICON_KEYS = new Set([

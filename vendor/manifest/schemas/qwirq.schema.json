@@ -152,8 +152,23 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["checks"],
-      "description": "Checks run on every push against the exact pushed commit. This platform version supports the command adapter with no network; unsupported fields are rejected, never ignored.",
+      "description": "Checks run on every push against the exact pushed commit, and the build targets they gate. Unsupported fields are rejected, never ignored.",
       "properties": {
+        "targetRef": {
+          "type": "string",
+          "minLength": 12,
+          "maxLength": 4096,
+          "pattern": "^refs/heads/",
+          "default": "refs/heads/main",
+          "description": "The integration branch. A push to it is a 'push' event; a push to any other branch is evaluated as a 'pull_request' against its merge-base with this ref. Must be a well-formed refs/heads/<name> (the git-host intake grammar)."
+        },
+        "builds": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "description": "Build targets (M2: android-apk; M3: expo-update). A build runs on request against a commit whose required checks pass; it is not a check.",
+          "items": { "$ref": "#/$defs/pipelineBuild" }
+        },
         "checks": {
           "type": "array",
           "minItems": 1,
@@ -184,8 +199,16 @@
                 "type": "array",
                 "maxItems": 50,
                 "items": { "$ref": "#/$defs/pipelineName" },
-                "description": "Checks in this manifest that must succeed first. A failed dependency skips this check."
+                "description": "Checks in this manifest that must succeed first. A failed dependency skips this check. Naming a matrix check means every one of its expanded jobs."
               },
+              "on": { "$ref": "#/$defs/pipelineTrigger" },
+              "matrix": { "$ref": "#/$defs/pipelineMatrix" },
+              "failFast": { "type": "boolean", "default": true, "description": "Matrix checks only: when one expanded job fails, cancel its unfinished siblings. false = every expanded job runs to its own result." },
+              "env": { "$ref": "#/$defs/pipelineEnv", "description": "Literal environment values for every step of this check. A step's own env overrides a key set here; platform-injected variables (proxy settings on dependencies steps) override both. Never put secrets here; the manifest is committed." },
+              "services": { "$ref": "#/$defs/pipelineServices" },
+              "caches": { "$ref": "#/$defs/pipelineCaches" },
+              "reports": { "$ref": "#/$defs/pipelineReports" },
+              "inputs": { "$ref": "#/$defs/checkInputs" },
               "steps": {
                 "type": "array",
                 "minItems": 1,
@@ -205,14 +228,8 @@
                       "description": "argv, e.g. [node, test.mjs]. No implicit shell; write [sh, -c, '...'] when you want one."
                     },
                     "cwd": { "$ref": "#/$defs/relativePath", "description": "Working directory relative to the repository root; must stay inside it." },
-                    "env": {
-                      "type": "object",
-                      "maxProperties": 64,
-                      "propertyNames": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$", "x-patternMessage": "is not a valid environment variable name", "maxLength": 128 },
-                      "additionalProperties": { "type": "string", "maxLength": 4096 },
-                      "description": "Literal environment values. Never put secrets here; the manifest is committed."
-                    },
-                    "network": { "type": "string", "enum": ["none"], "default": "none", "description": "Network access. Only 'none' is supported in this platform version." }
+                    "env": { "$ref": "#/$defs/pipelineEnv", "description": "Literal environment values for this step; a key here overrides the check's env. Never put secrets here; the manifest is committed." },
+                    "network": { "$ref": "#/$defs/pipelineNetwork" }
                   }
                 }
               },
@@ -236,9 +253,369 @@
           }
         }
       }
+    },
+    "releases": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["channels"],
+      "description": "Release channels this repository wants. DESIRED configuration only: the owner reconciles it through revisioned settings. A push cannot set a signing identity, grant secrets, enable public access, publish, or unpause an owner-paused channel.",
+      "properties": {
+        "channels": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": { "$ref": "#/$defs/releaseChannel" }
+        }
+      }
     }
   },
   "$defs": {
+    "pipelineEnv": {
+      "type": "object",
+      "maxProperties": 64,
+      "propertyNames": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$", "x-patternMessage": "is not a valid environment variable name", "maxLength": 128 },
+      "additionalProperties": { "type": "string", "maxLength": 4096 },
+      "description": "Literal environment values. Never put secrets here; the manifest is committed."
+    },
+    "pipelineNetwork": {
+      "type": "string",
+      "enum": ["none", "services", "dependencies"],
+      "default": "none",
+      "description": "Network profile for the step. none = no network at all; services = only this job attempt's own services; dependencies = its services plus the platform's reviewed package-registry proxy (the allowlist is platform policy; a manifest cannot add hosts)."
+    },
+    "pipelineServices": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 4,
+      "propertyNames": { "type": "string", "pattern": "^[a-z](?:[a-z0-9-]{0,30}[a-z0-9])?$", "x-patternMessage": "is not a service name: lowercase DNS label, at most 32 characters", "maxLength": 32 },
+      "additionalProperties": { "$ref": "#/$defs/pipelineService" },
+      "description": "Disposable service containers (databases, object-store mocks) on a private per-attempt network; each is reachable from steps on the services or dependencies network at its name, e.g. postgres:5432. Never published on the host."
+    },
+    "pipelineService": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["image", "ready"],
+      "properties": {
+        "image": { "$ref": "#/properties/pipeline/properties/checks/items/properties/image" },
+        "env": { "$ref": "#/$defs/pipelineEnv", "maxProperties": 32, "description": "Literal, disposable test values for the service container." },
+        "ready": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["command"],
+          "description": "Readiness probe run inside the service until it exits 0. Steps start only after every service is ready; exhausting the attempts fails the job as service_unhealthy.",
+          "properties": {
+            "command": { "type": "array", "minItems": 1, "maxItems": 32, "items": { "type": "string", "maxLength": 1024 }, "description": "argv inside the service container, e.g. [pg_isready, -U, postgres]." },
+            "intervalSeconds": { "type": "integer", "minimum": 1, "maximum": 60, "default": 5 },
+            "timeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 60, "default": 3 },
+            "attempts": { "type": "integer", "minimum": 1, "maximum": 120, "default": 20 }
+          }
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Service container limits; omitted values take the defaults.",
+          "properties": {
+            "memoryMb": { "type": "integer", "minimum": 64, "maximum": 2048, "default": 512 },
+            "cpus": { "type": "number", "minimum": 0.1, "maximum": 2, "default": 0.5 },
+            "pids": { "type": "integer", "minimum": 16, "maximum": 1024, "default": 256 }
+          }
+        }
+      }
+    },
+    "pipelineCaches": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4,
+      "description": "Package-download caches. Restored into an attempt-local copy, saved only after success, keyed by the exact content of the input files (plus tenant, repository, trust lane, image and platform policy). Never cache node_modules, build outputs or credentials.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "path", "inputs"],
+        "properties": {
+          "name": { "$ref": "#/$defs/pipelineName", "description": "Cache name, unique within the check." },
+          "path": {
+            "type": "string",
+            "maxLength": 256,
+            "pattern": "^/cache/[a-z0-9][a-z0-9._-]*(?:/[a-z0-9][a-z0-9._-]*)*$",
+            "x-patternMessage": "must be an absolute path under /cache/ (lowercase segments, no . or .. segments)",
+            "description": "Mount point inside the job container, under /cache/, e.g. /cache/pnpm."
+          },
+          "inputs": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 32,
+            "items": { "$ref": "#/$defs/relativePath" },
+            "description": "Exact repository files whose content keys the cache (lockfiles, workspace config, patches). No globs."
+          }
+        }
+      }
+    },
+    "pipelineReports": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "description": "Files or directories archived after the steps run (including on failure), stored privately with the attempt.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "paths"],
+        "properties": {
+          "name": { "$ref": "#/$defs/pipelineName", "description": "Report name, unique among this check's outputs and reports." },
+          "paths": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "$ref": "#/$defs/relativePath" }, "description": "Files or directories relative to the repository root." },
+          "when": { "type": "string", "enum": ["always", "success", "failure"], "default": "always" },
+          "retentionDays": { "type": "integer", "minimum": 1, "maximum": 90, "default": 14, "description": "Requested retention; the operator ceiling applies." }
+        }
+      }
+    },
+    "pipelineMatrix": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 4,
+      "propertyNames": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,15}$", "x-patternMessage": "is not a matrix axis name: lowercase letter, then letters, digits or _, at most 16", "maxLength": 16 },
+      "additionalProperties": { "type": "array", "minItems": 1, "maxItems": 50, "items": { "$ref": "#/$defs/matrixValue" } },
+      "description": "Scalar axes expanded into one job per combination (at most 50 jobs per push in total). Each job is named <check>-<axis>-<value>[-<axis>-<value>...] with axes in name order, e.g. e2e-shard-1. ${matrix.<axis>} is replaced in step run arguments and env values only; nothing is evaluated."
+    },
+    "matrixValue": {
+      "anyOf": [
+        { "type": "integer", "minimum": 0, "maximum": 999999 },
+        { "type": "string", "minLength": 1, "maxLength": 32, "pattern": "^[a-z0-9][a-z0-9._-]*$", "x-patternMessage": "must be lowercase letters, digits, ., _ or - and start with a letter or digit" }
+      ]
+    },
+    "pipelineTrigger": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "description": "When the check applies. An inapplicable check records its reason and is not a success. When changed paths cannot be computed the check runs.",
+      "properties": {
+        "events": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 3,
+          "items": { "type": "string", "enum": ["push", "pull_request", "manual"] },
+          "description": "push = a push to targetRef; pull_request = a push to any other branch (until changes land, against its merge-base with targetRef); manual = an explicit run. Default: all."
+        },
+        "paths": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/pathGlob" },
+          "description": "Applies only when a changed file matches one of these globs."
+        }
+      }
+    },
+    "pathGlob": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^(?!/)(?![A-Za-z]:)(?!(?:.*/)?\\.\\.(?:/|$))[^\\u0000-\\u001f\\\\\\[\\]{}!]+$",
+      "x-patternMessage": "must be a relative glob inside the repository: * and ? within a segment, ** as a whole segment; no [ ] { } ! or backslash",
+      "description": "Relative POSIX glob: '*' matches within a path segment, '?' one character, '**' as a whole segment any number of segments."
+    },
+    "pipelineBuild": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "adapter"],
+      "description": "A build target. android-apk: an unsigned release APK from an Expo project, signed afterwards by the platform signer. expo-update (M3): an over-the-air content export sharing an android-apk target's native identity. The toolchain image, resource limits, signing and allocated version code are platform-owned.",
+      "properties": {
+        "name": { "$ref": "#/$defs/pipelineName", "description": "Build target name, unique within the manifest (qwirq build --target <name>)." },
+        "adapter": { "type": "string", "enum": ["android-apk", "expo-update"] },
+        "labels": { "$ref": "#/properties/pipeline/properties/checks/items/properties/labels" },
+        "native": { "$ref": "#/$defs/pipelineName", "description": "expo-update only: the android-apk target whose app, install, prepare, inputs and env this export shares." },
+        "app": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "applicationId"],
+          "description": "android-apk only: the Expo project.",
+          "properties": {
+            "path": { "$ref": "#/$defs/relativePath", "description": "Expo project directory, e.g. apps/mobile." },
+            "applicationId": { "type": "string", "maxLength": 255, "pattern": "^[a-zA-Z][a-zA-Z0-9_]*(?:\\.[a-zA-Z][a-zA-Z0-9_]*)+$", "x-patternMessage": "is not an Android application id (e.g. com.example.app)", "description": "Android package; version codes are allocated per tenant + application id." }
+          }
+        },
+        "install": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "description": "android-apk only: locked dependency installs, in order, each from its own committed lockfile (pnpm install --frozen-lockfile / npm ci).",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["manager"],
+            "properties": {
+              "path": { "$ref": "#/$defs/relativePath", "description": "Directory holding the package.json and lockfile. Default: the repository root." },
+              "manager": { "type": "string", "enum": ["pnpm", "npm"] },
+              "filter": { "type": "array", "minItems": 1, "maxItems": 32, "items": { "type": "string", "maxLength": 214, "pattern": "^[@a-zA-Z0-9][@a-zA-Z0-9._/-]*$", "x-patternMessage": "is not a workspace package name" }, "description": "pnpm only: install just these workspace packages (--filter)." },
+              "legacyPeerDeps": { "type": "boolean", "default": false, "description": "npm only: --legacy-peer-deps." }
+            }
+          }
+        },
+        "prepare": {
+          "type": "array",
+          "maxItems": 16,
+          "description": "android-apk only: argv steps after install and before the clean native prebuild (e.g. build shared workspace packages). No network.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "run"],
+            "properties": {
+              "name": { "$ref": "#/$defs/pipelineName" },
+              "run": { "$ref": "#/properties/pipeline/properties/checks/items/properties/steps/items/properties/run" },
+              "cwd": { "$ref": "#/$defs/relativePath" },
+              "env": { "$ref": "#/$defs/pipelineEnv" }
+            }
+          }
+        },
+        "inputs": {
+          "type": "array",
+          "maxItems": 16,
+          "description": "android-apk only: declared inputs (any kind; at most 16 together with downloads, at most 8 files and 8 downloads). An entry without kind is the 0.5 file alias: a public build input placed at path before prebuild (e.g. google-services.json), supplied by the owner-configured input of the same name when not in the repository; its digest is recorded with the build. Never credentials. Normalized with downloads into one canonical inputs list.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name"],
+            "anyOf": [{ "required": ["kind"] }, { "required": ["path"] }],
+            "properties": {
+              "kind": { "$ref": "#/$defs/input/properties/kind", "description": "Absent = file (0.5 alias, which requires path)." },
+              "name": { "$ref": "#/$defs/pipelineName" },
+              "path": { "$ref": "#/$defs/relativePath", "description": "file/download destination. Kinded entries must be an exact input path." },
+              "sha256": { "$ref": "#/$defs/sha256", "description": "file: optional pin (a different file fails the build); other kinds: required." },
+              "repository": { "$ref": "#/$defs/input/properties/repository" },
+              "commit": { "$ref": "#/$defs/input/properties/commit" },
+              "paths": { "$ref": "#/$defs/input/properties/paths" },
+              "lockfile": { "$ref": "#/$defs/input/properties/lockfile" },
+              "privateScopes": { "$ref": "#/$defs/input/properties/privateScopes" },
+              "url": { "$ref": "#/$defs/input/properties/url" },
+              "unpack": { "$ref": "#/$defs/input/properties/unpack" }
+            }
+          }
+        },
+        "downloads": {
+          "type": "array",
+          "maxItems": 8,
+          "description": "android-apk only (0.5 alias of kind: download): checksum-pinned files fetched through the dependency proxy (never by a package's own unchecked script), verified, and placed after install and after the runtime fingerprint is computed. unpack: zip extracts into path. The host must be on the reviewed dependency allowlist. Normalized into the canonical inputs list.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "url", "sha256", "path"],
+            "properties": {
+              "name": { "$ref": "#/$defs/pipelineName" },
+              "url": { "$ref": "#/$defs/input/properties/url" },
+              "sha256": { "$ref": "#/$defs/sha256" },
+              "path": { "$ref": "#/$defs/relativePath", "description": "Destination file, or directory when unpack is zip." },
+              "unpack": { "$ref": "#/$defs/input/properties/unpack" }
+            }
+          }
+        },
+        "architectures": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "items": { "type": "string", "enum": ["arm64-v8a", "armeabi-v7a", "x86_64", "x86"] },
+          "default": ["arm64-v8a", "armeabi-v7a"],
+          "description": "android-apk only: ABIs. Default [arm64-v8a, armeabi-v7a]."
+        },
+        "runtime": { "type": "string", "enum": ["fingerprint", "opaque"], "default": "fingerprint", "description": "android-apk only: fingerprint = runtime from the validated Expo fingerprint + native-tree digest (opaque when validation fails); opaque = always a build-unique runtime (no content updates)." },
+        "env": { "$ref": "#/$defs/pipelineEnv", "description": "android-apk only: literal, non-secret build environment." }
+      }
+    },
+    "releaseChannel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "platform", "build"],
+      "properties": {
+        "name": { "$ref": "#/$defs/channelName", "description": "Channel name, unique per platform, e.g. internal, production." },
+        "platform": { "type": "string", "enum": ["android"] },
+        "build": { "$ref": "#/$defs/pipelineName", "description": "The android-apk build target whose signed APKs this channel publishes." },
+        "content": { "$ref": "#/$defs/pipelineName", "description": "M3: the expo-update target whose content this channel publishes; its native target must be build." },
+        "default": { "type": "boolean", "default": false, "description": "The channel /get/<project> resolves to. At most one per platform." },
+        "autoPublish": { "type": "boolean", "default": false, "description": "Desire: publish verified main builds automatically. Takes effect only through an owner-enabled rule; never unpauses an owner pause." },
+        "audience": { "type": "string", "enum": ["members", "key"], "default": "members", "description": "Desire: who may install. members = signed-in repository readers; key = also holders of the channel key. Public access is not configurable from source." }
+      }
+    },
+    "channelName": {
+      "type": "string",
+      "maxLength": 32,
+      "pattern": "^[a-z][a-z0-9-]{0,31}$",
+      "x-patternMessage": "is not a channel name: a lowercase letter, then lowercase letters, digits or -, at most 32 characters",
+      "description": "Release channel name; the one grammar shared by lib/releases (channels) and lib/secrets (signing pins)."
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "x-patternMessage": "is not a lowercase hex SHA-256"
+    },
+    "jobPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "spec"],
+      "description": "Engine contract: one normalized job (an M0 check, or one expanded matrix job) as planPipeline emits it and the pipeline engine admits it (normalizeJobPlans). Not authored in qwirq.yaml.",
+      "properties": {
+        "name": { "$ref": "#/$defs/pipelineName" },
+        "required": { "type": "boolean", "default": true },
+        "labels": { "$ref": "#/properties/pipeline/properties/checks/items/properties/labels" },
+        "needs": { "type": "array", "maxItems": 50, "items": { "$ref": "#/$defs/pipelineName" }, "description": "Exact job names in the same submission." },
+        "on": { "$ref": "#/$defs/pipelineTrigger" },
+        "matrix": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["group", "values", "failFast"],
+          "description": "Display/grouping metadata of an expanded matrix job. name must equal the canonical expansion name of group + values.",
+          "properties": {
+            "group": { "$ref": "#/$defs/pipelineName", "description": "The authored check name." },
+            "values": { "type": "object", "minProperties": 1, "maxProperties": 4, "propertyNames": { "$ref": "#/$defs/pipelineMatrix/propertyNames" }, "additionalProperties": { "$ref": "#/$defs/matrixValue" } },
+            "failFast": { "type": "boolean" }
+          }
+        },
+        "spec": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["adapter", "image", "steps"],
+          "properties": {
+            "adapter": { "$ref": "#/properties/pipeline/properties/checks/items/properties/adapter" },
+            "image": { "$ref": "#/properties/pipeline/properties/checks/items/properties/image" },
+            "steps": { "$ref": "#/properties/pipeline/properties/checks/items/properties/steps" },
+            "outputs": { "$ref": "#/properties/pipeline/properties/checks/items/properties/outputs" },
+            "limits": { "$ref": "#/$defs/pipelineLimits" },
+            "services": { "$ref": "#/$defs/pipelineServices" },
+            "caches": { "$ref": "#/$defs/pipelineCaches" },
+            "reports": { "$ref": "#/$defs/pipelineReports" },
+            "inputs": { "$ref": "#/$defs/checkInputs" }
+          }
+        }
+      }
+    },
+    "checkInputs": {
+      "type": "array",
+      "maxItems": 16,
+      "description": "Platform-supplied inputs, verified by digest before any step runs and mounted read-only at /inputs/<name> (an npm seed's attempt-local writable copy is /cache/<name>). Checks: kind repository | npm. Planning never fetches; fetching is authorized by operator policy, never by this declaration. Empty = none.",
+      "items": { "$ref": "#/$defs/input" }
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "name"],
+      "description": "One declared input. repository: exact files/directories of a platform repository at an exact commit (sha256 = qwirq.input-tree.v1 digest). npm: a credential-free package seed for a committed package-lock.json (sha256 of the raw lockfile bytes). file / download: build-only placements (the 0.5 build aliases).",
+      "properties": {
+        "kind": { "type": "string", "enum": ["repository", "npm", "file", "download"] },
+        "name": { "$ref": "#/$defs/pipelineName", "description": "Unique per check/build; the mount is /inputs/<name>." },
+        "repository": { "type": "string", "maxLength": 127, "pattern": "^[a-z0-9][a-z0-9-]{0,62}/[a-z0-9][a-z0-9-]{0,62}$", "x-patternMessage": "is not a platform repository identifier <owner>/<repo> (never a URL or local path)", "description": "repository: the platform repository, resolved through operator configuration." },
+        "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$", "x-patternMessage": "is not a full 40-character lowercase hex commit (no branch, tag or short SHA)", "description": "repository: the exact commit." },
+        "paths": { "type": "array", "minItems": 1, "maxItems": 64, "items": { "$ref": "#/$defs/inputPath" }, "description": "repository: exact files/directories (no globs), non-overlapping; repository-relative names are preserved under the mount." },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "lockfile": { "$ref": "#/$defs/inputPath", "description": "npm: a committed package-lock.json (lockfileVersion 3)." },
+        "privateScopes": { "type": "array", "maxItems": 16, "items": { "type": "string", "maxLength": 64, "pattern": "^@[a-z0-9][a-z0-9-]{0,62}$", "x-patternMessage": "is not an npm scope (@name)" }, "description": "npm: private scopes the seed may hold (e.g. [\"@qwirq\"]). Default none. Authorization is operator policy." },
+        "path": { "$ref": "#/$defs/inputPath", "description": "file/download: destination file, or directory when unpack is zip." },
+        "url": { "type": "string", "maxLength": 2048, "pattern": "^https://[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+(?:/[A-Za-z0-9._~%!$&'()*+,;=:@/-]*)?$", "x-patternMessage": "must be an https URL on a named host (no credentials, port, query or fragment)" },
+        "unpack": { "type": "string", "enum": ["none", "zip"], "default": "none" }
+      }
+    },
+    "inputPath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^(?!/)(?!.*//)(?!.*/$)(?!(?:.*/)?\\.\\.?(?:/|$))[^\\u0000-\\u001f\\u007f\\\\*?\\[\\]{}:]+$",
+      "x-patternMessage": "must be an exact relative POSIX path (no leading /, empty, . or .. segment, backslash, control character, glob character or colon)",
+      "description": "Exact relative POSIX input path, never normalized."
+    },
     "pipelineName": {
       "type": "string",
       "pattern": "^[a-z0-9][a-z0-9._-]*$",

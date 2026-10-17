@@ -49,7 +49,7 @@ check('ensureModeline is idempotent', ensureModeline(withLine, 'y') === withLine
 // schema file is loadable + well-formed.
 check('bundled schema loads + has $id', typeof loadSchema().$id === 'string')
 
-// M0 pipeline (vendored @qwirq/manifest 0.4.0: dist/pipeline.js + schema `pipeline`).
+// M0 pipeline shapes (vendored @qwirq/manifest 0.6.0 still plans them byte-identically).
 const IMAGE = 'node:20-bookworm-slim@sha256:' + 'a'.repeat(64)
 const pipelineOnly = `id: sample
 name: Sample
@@ -71,6 +71,47 @@ const neither = validateManifest(parseManifestText('id: ok\nname: X'))
 check('neither provides nor pipeline -> error', neither.some((e) => /provides/.test(e) && /pipeline/.test(e)), neither.join(' | '))
 const badAdapter = planPipeline(parseManifestText(pipelineOnly.replace('adapter: command', 'adapter: gradle')))
 check('unknown adapter -> adapter_unknown', !badAdapter.ok && badAdapter.issues.some((i) => i.code === 'adapter_unknown'), JSON.stringify(badAdapter))
+// 0.5.0 (vendored 410cbf3): network profiles + the build/channel planner ship in the runtime.
+const deps = parseManifestText(pipelineOnly.replace('network: none', 'network: dependencies'))
+check('0.5.0: step network "dependencies" validates and plans', validateManifest(deps).length === 0 && planPipeline(deps).ok, validateManifest(deps).join(' | '))
+const rt = await import('../vendor/manifest/dist/index.js')
+check('0.5.0: runtime exports planBuilds + normalizeJobPlans + NETWORK_PROFILES', typeof rt.planBuilds === 'function' && typeof rt.normalizeJobPlans === 'function' && rt.NETWORK_PROFILES != null)
+
+// 0.6.0 (vendored 1a745c8, WP6): declared inputs — checks take repository|npm, the shared tree digest,
+// all 10 dist modules present (index.js imports inputs.js), schema $defs.input.
+const { readdirSync } = await import('node:fs')
+const { createHash } = await import('node:crypto')
+const distDir = new URL('../vendor/manifest/dist/', import.meta.url)
+const mods = readdirSync(distDir).filter((f) => f.endsWith('.js')).sort()
+check('0.6.0: all 10 dist modules vendored (incl. inputs.js)', mods.join() === 'builds.js,grammar.js,index.js,inputs.js,pipeline.js,plan.js,profiles.js,registry.js,types.js,validate.js', mods.join())
+check('0.6.0: runtime exports INPUT_KINDS + CHECK_INPUT_KINDS + inputTreeSha256 + upgradeBuildInputs',
+  rt.INPUT_KINDS?.join() === 'repository,npm,file,download' && rt.CHECK_INPUT_KINDS?.join() === 'repository,npm' &&
+  typeof rt.inputTreeSha256 === 'function' && typeof rt.upgradeBuildInputs === 'function', rt.INPUT_KINDS)
+const tree = [{ path: 'b.txt', sha256: 'b'.repeat(64) }, { path: 'a.txt', sha256: 'a'.repeat(64) }]
+const want = createHash('sha256').update(`a.txt\0${'a'.repeat(64)}\nb.txt\0${'b'.repeat(64)}\n`).digest('hex')
+check('0.6.0: inputTreeSha256 = qwirq.input-tree.v1 (path NUL sha LF, bytewise path order)', rt.inputTreeSha256(tree) === want)
+check('0.6.0: schema declares $defs.input', !!loadSchema().$defs?.input)
+const PIN = 'abcdef0123456789abcdef0123456789abcdef01'
+const withInputs = pipelineOnly.replace('      steps:', `      inputs:
+        - { kind: repository, name: core, repository: qwirq/core, commit: ${PIN}, paths: [supabase/migrations, scripts/migrate.mjs], sha256: ${'c'.repeat(64)} }
+        - { kind: npm, name: npm, lockfile: package-lock.json, sha256: ${'d'.repeat(64)}, privateScopes: ['@qwirq'] }
+      steps:`)
+const wi = parseManifestText(withInputs)
+const wiPlan = planPipeline(wi)
+check('0.6.0: a check declaring repository + npm inputs validates and plans', validateManifest(wi).length === 0 && wiPlan.ok, validateManifest(wi).join(' | ') + JSON.stringify(wiPlan.issues ?? ''))
+check('0.6.0: canonical spec.inputs sorted by name, selections sorted', wiPlan.ok &&
+  wiPlan.jobs[0].spec.inputs?.map((i) => i.name).join() === 'core,npm' && wiPlan.jobs[0].spec.inputs[0].paths.join() === 'scripts/migrate.mjs,supabase/migrations',
+  JSON.stringify(wiPlan.jobs?.[0]?.spec.inputs))
+for (const [label, from, to] of [
+  ['a mutable ref (short commit) is refused', `commit: ${PIN}`, 'commit: main'],
+  ['path traversal is refused', 'supabase/migrations,', '../secrets,'],
+  ['a file input on a check is refused (checks take repository|npm)', `kind: npm, name: npm, lockfile: package-lock.json, sha256: ${'d'.repeat(64)}, privateScopes: ['@qwirq']`, 'kind: file, name: f, path: a.txt'],
+  ['an unknown input field is refused', 'name: core,', 'name: core, url: https://x.test/,'],
+]) {
+  const m = parseManifestText(withInputs.replace(from, to))
+  const bad = validateManifest(m).length > 0 || !planPipeline(m).ok
+  check(`0.6.0: ${label}`, bad, validateManifest(m).join(' | '))
+}
 
 console.log('')
 console.log(fail === 0 ? 'ALL PASS' : `${fail} FAILED`)
