@@ -140,8 +140,9 @@ const HELP = `qwirq — Knowledge (Texere) + Secrets from the terminal
   qwirq release publish <repo> --channel <name> --build <buildQID> --expected-current <qid|none>
                                     --expected-revision <n> [--notes-file <path> | --stdin] [--no-wait] [--json]
                                     publish exactly what the preview showed; waits until verified + published
-  qwirq release promote <repo> --from <channel> --to <channel> [--expected-current <qid|none> --expected-revision <n>]
-                                    publish --from's current release on --to; without the snapshot: preview, refuse
+  qwirq release promote <repo> --from <channel> --to <channel> [--source <releaseQID> --expected-current <qid|none> --expected-revision <n>]
+                                    publish the reviewed --from release on --to; without --source + snapshot: preview, refuse;
+                                    if --from moved since the preview: refuse, exit 1 [source_changed]
   qwirq release again <releaseQID> --expected-current <qid> --expected-revision <n> [--notes-file <path>] [--no-wait]
                                     roll back to an earlier release (a native roll-back rebuilds it forward with a
                                     higher version code); pauses auto-publish on the channel

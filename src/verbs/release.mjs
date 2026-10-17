@@ -4,7 +4,7 @@
 //   release preview <repo> --channel <c> --build <b>         effects in words + blockers + the snapshot to publish against
 //   release publish <repo> --channel <c> --build <b> --expected-current <qid|none> --expected-revision <n>
 //                   [--notes-file <path> | --stdin] [--no-wait] [--json]
-//   release promote <repo> --from <c> --to <c> [--expected-current … --expected-revision …]   (without them: preview, refuse)
+//   release promote <repo> --from <c> --to <c> [--source <releaseQID> --expected-current … --expected-revision …]   (without them: preview, refuse)
 //   release again <releaseQID> --expected-current <qid> --expected-revision <n> [--notes-file] [--no-wait]
 //   release wait <requestQID> | --recovery <recoveryQID>     follow a request already made
 // The expected snapshot is the human's decision: the CLI never refreshes it, never retries a stale_channel.
@@ -21,7 +21,7 @@ const USAGE = {
   show: 'qwirq release show <releaseQID> [--json]',
   preview: 'qwirq release preview <repo> --channel <name> --build <buildQID> [--json]',
   publish: 'qwirq release publish <repo> --channel <name> --build <buildQID> --expected-current <qid|none> --expected-revision <n> [--notes-file <path> | --stdin] [--no-wait] [--json]',
-  promote: 'qwirq release promote <repo> --from <channel> --to <channel> [--expected-current <qid|none> --expected-revision <n>] [--notes-file <path> | --stdin] [--no-wait] [--json]',
+  promote: 'qwirq release promote <repo> --from <channel> --to <channel> [--source <releaseQID> --expected-current <qid|none> --expected-revision <n>] [--notes-file <path> | --stdin] [--no-wait] [--json]',
   again: 'qwirq release again <releaseQID> --expected-current <qid> --expected-revision <n> [--notes-file <path> | --stdin] [--no-wait] [--json]',
   wait: 'qwirq release wait <requestQID> | --recovery <recoveryQID> [--json]',
 }
@@ -157,7 +157,10 @@ async function promote(repo, flags, json, io, ctx) {
   if (from === to) throw new UsageError(`--from and --to name the same channel. usage: ${USAGE.promote}`)
   const expectedCurrentReleaseQID = currentFlag(flags, USAGE.promote, { required: false })
   const expectedChannelRevision = revisionFlag(flags, USAGE.promote, { required: false })
-  const decided = expectedCurrentReleaseQID !== undefined && expectedChannelRevision !== undefined
+  // the reviewed source release is frozen in the confirmation: never "whatever --from serves now"
+  const frozenSource = flags.source === undefined || flags.source === true ? undefined : String(flags.source)
+  if (frozenSource !== undefined && !/^\d+$/.test(frozenSource)) throw new UsageError(`--source must be a release number, got "${frozenSource}". usage: ${USAGE.promote}`)
+  const decided = expectedCurrentReleaseQID !== undefined && expectedChannelRevision !== undefined && frozenSource !== undefined
   const notesMd = decided ? await notesFrom(flags, USAGE.promote) : ''
 
   const all = await listChannels(repo)
@@ -165,16 +168,24 @@ async function promote(repo, flags, json, io, ctx) {
   const src = find(from)
   const dst = find(to)
   for (const [n, c] of [[from, src], [to, dst]]) if (!c) throw Object.assign(new Error(`no channel "${n}" in ${repo}`), { code: 'not_found' })
-  const sourceReleaseQID = src.currentReleaseQID
-  if (!sourceReleaseQID) throw Object.assign(new Error(`nothing is published on ${from} yet; there is no release to promote`), { code: 'no_published_release' })
+  const servedNow = src.currentReleaseQID
+  if (!decided && !servedNow) throw Object.assign(new Error(`nothing is published on ${from} yet; there is no release to promote`), { code: 'no_published_release' })
+  const sourceReleaseQID = decided ? frozenSource : servedNow
   ctx.hint = `Re-run: qwirq release promote ${repo} --from ${from} --to ${to}`
+  if (decided && servedNow !== frozenSource) {
+    // the source channel moved since the preview: refuse rather than promote something nobody reviewed
+    const message = `${from} now serves ${servedNow ? `release ${servedNow}` : 'nothing'}, not release ${frozenSource} you reviewed; nothing was published. Re-run the preview: qwirq release promote ${repo} --from ${from} --to ${to}`
+    if (json) io.err(JSON.stringify({ code: 'source_changed', status: null, message, reviewed: frozenSource, current: servedNow ?? null }))
+    else io.err(`error: ${message} [source_changed]`)
+    return EXIT.failed
+  }
 
   if (!decided) {
     // Show what promoting would do and the snapshot it would be decided against; never publish on a guess.
     const p = await apiFetch('POST', `/api/v1/channels/${enc(dst.qid)}/preview`, { body: { sourceReleaseQID } })
     if (json) printJSON(io, p)
-    else printPreview(io, p, { what: `release ${sourceReleaseQID} (current on ${from}) → ${to}`, next: (snap) => `qwirq release promote ${repo} --from ${from} --to ${to} ${snap} [--notes-file <path>]` })
-    const message = 'promote publishes only against the snapshot you saw: re-run with --expected-current and --expected-revision from the preview above'
+    else printPreview(io, p, { what: `release ${sourceReleaseQID} (current on ${from}) → ${to}`, next: (snap) => `qwirq release promote ${repo} --from ${from} --to ${to} --source ${sourceReleaseQID} ${snap} [--notes-file <path>]` })
+    const message = 'promote publishes only what you reviewed: re-run with --source, --expected-current and --expected-revision from the preview above'
     if (json) io.err(JSON.stringify({ code: 'expected_snapshot_required', status: null, message }))
     else io.err(`error: ${message} [expected_snapshot_required]`)
     return EXIT.error

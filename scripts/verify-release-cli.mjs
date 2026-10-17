@@ -363,7 +363,7 @@ const PUB = ['release', 'publish', 'sample', '--channel', 'internal', '--build',
   let s = since(n)
   check('promote without the snapshot: previews the --from current release on --to', s.some((x) => x.path === '/api/v1/channels/78/preview' && JSON.stringify(x.body) === '{"sourceReleaseQID":"900"}'), JSON.stringify(s.map((x) => [x.path, x.body])))
   check('promote without the snapshot: refuses to publish (no publish POST), exit 2', r.code === 2 && !s.some((x) => x.path.endsWith('/publish')) && /\[expected_snapshot_required\]/.test(r.stderr), `exit=${r.code} ${r.stderr}`)
-  check('promote preview: effects + the exact promote command', /Production: everyone with access/.test(r.stdout) && r.stdout.includes('qwirq release promote sample --from internal --to production --expected-current none --expected-revision 2'), r.stdout)
+  check('promote preview: effects + the exact promote command', /Production: everyone with access/.test(r.stdout) && r.stdout.includes('qwirq release promote sample --from internal --to production --source 900 --expected-current none --expected-revision 2'), r.stdout)
   r = await run(['release', 'promote', 'sample', '--from', 'internal', '--to', 'production', '--expected-revision', '2'])
   check('promote with only one expected flag: still refuses', r.code === 2 && /expected_snapshot_required/.test(r.stderr))
   r = await run(['release', 'promote', 'sample', '--from', 'internal', '--to', 'production', '--json'])
@@ -372,10 +372,29 @@ const PUB = ['release', 'publish', 'sample', '--channel', 'internal', '--build',
   toProduction = publishRoute({ path: '/api/v1/channels/78/publish' })
   n = reqs.length
   r = await run(['release', 'promote', 'sample', '--from', 'internal', '--to', 'production', '--expected-current', 'none', '--expected-revision', '2', '--notes-file', NOTES])
+  check('promote with the destination snapshot but no --source: refuses (exit 2, no publish)', r.code === 2 && !since(n).some((x) => x.path.endsWith('/publish')) && /expected_snapshot_required/.test(r.stderr), r.stderr)
+  n = reqs.length
+  r = await run(['release', 'promote', 'sample', '--from', 'internal', '--to', 'production', '--source', '900', '--expected-current', 'none', '--expected-revision', '2', '--notes-file', NOTES])
   s = since(n)
   const post = s.find((x) => x.method === 'POST')
   check('promote with the snapshot: POST /channels/78/publish {sourceReleaseQID: from\'s current}', mutations(s).length === 1 && post.path === '/api/v1/channels/78/publish' && post.body.sourceReleaseQID === '900' && post.body.buildQID === undefined && post.body.expectedCurrentReleaseQID === null && post.body.expectedChannelRevision === 2 && UUID4.test(post.body.requestID) && post.body.notesMd.startsWith('## 0.5.2'), JSON.stringify(post?.body))
   check('promote: waits to published, exit 0', r.code === 0 && /release 900 from internal → production/.test(r.stdout) && /Published: release 901 is now current on production/.test(r.stdout), r.stdout)
+
+  // Codex r4: the preview showed release 900; Internal then moved to 901. The confirmation must not promote 901.
+  const moved = { ...CHANNELS, channels: CHANNELS.channels.map((c) => (c.name === 'internal' ? { ...c, currentReleaseQID: '901' } : c)) }
+  toProduction = publishRoute({ path: '/api/v1/channels/78/publish' })
+  route = (r) => (isChannels(r) ? [200, moved] : toProduction(r))
+  n = reqs.length
+  r = await run(['release', 'promote', 'sample', '--from', 'internal', '--to', 'production', '--source', '900', '--expected-current', 'none', '--expected-revision', '2', '--notes-file', NOTES])
+  check('source moved (reviewed 900, internal now 901): refuses, exit 1 [source_changed], no publish POST', r.code === 1 && !mutations(since(n)).length &&
+    /internal now serves release 901, not release 900 you reviewed/.test(r.stderr) && /\[source_changed\]/.test(r.stderr), `exit=${r.code} ${r.stderr}`)
+  n = reqs.length
+  r = await run(['release', 'promote', 'sample', '--from', 'internal', '--to', 'production', '--source', '900', '--expected-current', 'none', '--expected-revision', '2', '--notes-file', NOTES, '--json'])
+  check('source moved --json: {code:source_changed, reviewed:900, current:901}, exit 1', r.code === 1 && JSON.parse(r.stderr).code === 'source_changed' &&
+    JSON.parse(r.stderr).reviewed === '900' && JSON.parse(r.stderr).current === '901' && !mutations(since(n)).length, r.stderr)
+  route = (r) => (isChannels(r) ? [200, CHANNELS] : toProduction(r))
+  r = await run(['release', 'promote', 'sample', '--from', 'internal', '--to', 'production', '--source', 'x9', '--expected-current', 'none', '--expected-revision', '2'])
+  check('--source not a number -> exit 2', r.code === 2 && /--source must be a release number/.test(r.stderr), r.stderr)
 
   route = (r) => (isChannels(r) ? [200, { ...CHANNELS, channels: [{ ...INTERNAL, currentReleaseQID: null, currentRelease: null }, PRODUCTION] }] : envelope(500, 'server_error', 'x'))
   r = await run(['release', 'promote', 'sample', '--from', 'internal', '--to', 'production'])
