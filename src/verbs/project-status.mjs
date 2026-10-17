@@ -2,7 +2,7 @@
 // Pipeline facts only: no release, channel, or install data exists in M0, so none is shown. `project`
 // reads /projects/[slug]/status, `repo` reads /repositories/[slug]/status (compatibility-equivalent).
 import { apiFetch } from '../api.mjs'
-import { EXIT, UsageError, reportError, sha7, branch, stateWord, rejectionWords, when, pad, stdio } from './pipeline-shared.mjs'
+import { EXIT, UsageError, reportError, sha7, branch, stateWord, rejectionWords, when, pad, stdio, withSubject } from './pipeline-shared.mjs'
 
 function nowLine(s, byQid) {
   const a = s.attention
@@ -32,7 +32,8 @@ export async function statusVerb(family, positional, flags, io = stdio) {
     io.out(`Now: ${nowLine(s, byQid)}`)
     const p = s.latestPush
     if (p) {
-      io.out(`Latest push: ${p.qid} · ${sha7(p.commitSha)} on ${branch(p.ref)} · ${p.admission === 'rejected' ? `not admitted: ${rejectionWords(p.rejectionCode)}` : 'admitted'} · ${when(p.receivedAt)}`)
+      io.out(withSubject(`Latest push: ${p.qid} · ${sha7(p.commitSha)}`, p.commitSubject))
+      io.out(`  on ${branch(p.ref)} · ${p.admission === 'rejected' ? `not admitted: ${rejectionWords(p.rejectionCode)}` : 'admitted'} · ${when(p.receivedAt)}`)
     }
     if (checks.length) {
       io.out('Checks on the latest admitted commit:')

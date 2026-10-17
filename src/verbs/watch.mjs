@@ -11,12 +11,17 @@
 import { execFileSync } from 'node:child_process'
 import {
   EXIT, TERMINAL, NOT_SUCCESS, POLL_MS, UsageError, Interrupted, interruptible, sleep, pollGet, reportError,
-  flagStr, qs, sha7, branch, jobPhrase, rejectionWords, stateWord, clock, stdio,
+  flagStr, qs, sha7, branch, jobPhrase, rejectionWords, stateWord, clock, stdio, withSubject, cleanSubject,
 } from './pipeline-shared.mjs'
 
 const USAGE = 'qwirq watch <repo> [--sha <sha> | --latest] [--json]'
 // How long to wait for QWIRQ to receive the local HEAD (intake lags the push a moment).
 const RECEIVE_WAIT_MS = Number(process.env.QWIRQ_RECEIVE_WAIT_MS) || 120_000
+
+/** HEAD's subject line from the local checkout ('' when unavailable). */
+function localSubject() {
+  try { return execFileSync('git', ['log', '-1', '--format=%s', 'HEAD'], { stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf8' }).trim() } catch { return '' }
+}
 
 /** The checkout's HEAD commit, or null outside a git checkout (or without git, or an unborn HEAD). */
 function localHead() {
@@ -64,8 +69,9 @@ export async function watchVerb(positional, flags, io = stdio) {
     // --- snapshot the target ---
     let first = await pollGet(`/api/v1/pipeline/jobs${qs({ repo, sha: wantSha, limit: PAGE })}`, opts)
     if (head) {
-      if (json) emit({ type: 'head', repo, commitSha: head })
-      else io.out(`Watching ${sha7(head)} (your HEAD).`)
+      const subject = cleanSubject(localSubject()) || null
+      if (json) emit({ type: 'head', repo, commitSha: head, commitSubject: subject })
+      else io.out(withSubject(`Watching ${sha7(head)}`, subject, ' (your HEAD).'))
       // wait for intake to admit (or reject) the push of HEAD
       const started = Date.now()
       let waitingSaid = false
@@ -101,8 +107,11 @@ export async function watchVerb(positional, flags, io = stdio) {
       return EXIT.failed
     }
     const watched = push?.jobQIDs?.length ? push.jobQIDs.map(String) : (first.jobs ?? []).filter((j) => j.commitSha === sha).map((j) => String(j.qid))
-    if (json) emit({ type: 'target', repo, source: head ? 'head' : flags.sha !== undefined ? 'sha' : 'latest', pushQID: push?.qid ?? null, commitSha: sha, ref: push?.ref ?? null, jobQIDs: watched })
-    else io.out(`Watching ${push ? `push ${push.qid} · ` : ''}${sha7(sha)}${push ? ` on ${branch(push.ref)}` : ''} · ${watched.length} job${watched.length === 1 ? '' : 's'}. Ctrl+C stops watching; jobs keep running.`)
+    if (json) emit({ type: 'target', repo, source: head ? 'head' : flags.sha !== undefined ? 'sha' : 'latest', pushQID: push?.qid ?? null, commitSha: sha, commitSubject: push?.commitSubject ?? null, ref: push?.ref ?? null, jobQIDs: watched })
+    else {
+      io.out(withSubject(`Watching ${push ? `push ${push.qid} · ` : ''}${sha7(sha)}`, push?.commitSubject, `${push ? ` on ${branch(push.ref)}` : ''} · ${watched.length} job${watched.length === 1 ? '' : 's'}.`))
+      io.out('  Ctrl+C stops watching; jobs keep running.')
+    }
 
     // --- poll the commit, report changes of the watched jobs ---
     const seen = new Map() // qid -> "state|attempt|reason|cancel"

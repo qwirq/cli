@@ -89,7 +89,7 @@ const logPage = (attempt, lines, { hasMore = false, terminal = false, truncated 
   let n = reqs.length
   let r = await run(['jobs', 'sample'])
   check('jobs <repo> GETs /api/v1/pipeline/jobs?repo=<slug> with the bearer token', since(n)[0]?.query.repo === 'sample' && since(n)[0]?.auth === 'Bearer mock', JSON.stringify(since(n)[0]))
-  check('jobs <repo> groups by commit (sha7 + branch)', /a1b2c3d {2}main/.test(r.stdout) && /b2c3d4e {2}main/.test(r.stdout), r.stdout)
+  check('jobs <repo> groups by commit (sha7 + branch)', /^a1b2c3d {2}· main$/m.test(r.stdout) && /^b2c3d4e {2}· main$/m.test(r.stdout), r.stdout)
   check('jobs <repo> shows a rejected push in words', /push 10 · not admitted: too many outstanding jobs \(queue full\)/.test(r.stdout))
   check('jobs <repo> shows the queued reason in words', /lint\s+queued \(no online worker with labels linux, docker\)/.test(r.stdout))
   check('jobs <repo> shows running · attempt', /31\s+test\s+running · attempt 1/.test(r.stdout))
@@ -419,7 +419,7 @@ else {
   git('init', '-q')
   writeFileSync(join(repoDir, 'qwirq.yaml'), 'id: sample\nname: Sample\n')
   git('add', '.')
-  git('commit', '-q', '-m', 'init')
+  git('commit', '-q', '-m', 'Fix flaky test 🚀')
   const HEAD = git('rev-parse', 'HEAD')
   const h7 = HEAD.slice(0, 7)
   const PREV = SHA_A // the previous admitted push: what a naive "latest push" watch would grab
@@ -440,7 +440,7 @@ else {
   route = headRoute()
   let n = reqs.length
   let r = await run(['watch', 'sample'], { cwd: repoDir })
-  check('watch in a checkout: names the local HEAD', r.stdout.startsWith(`Watching ${h7} (your HEAD).`), r.stdout.split('\n')[0])
+  check('watch in a checkout: names the local HEAD with its subject', r.stdout.startsWith(`Watching ${h7} Fix flaky test 🚀 (your HEAD).`), r.stdout.split('\n')[0])
   check('watch in a checkout: waits for intake ("Waiting for QWIRQ to receive …" once)', (r.stderr.match(new RegExp(`Waiting for QWIRQ to receive ${h7}…`, 'g')) || []).length === 1, r.stderr)
   check('watch in a checkout: every request pinned to HEAD (never the previous push)', since(n).length >= 4 && since(n).every((x) => x.query.sha === HEAD) && !r.stdout.includes('a1b2c3d') && !r.stdout.includes('push 9'), JSON.stringify(since(n).map((x) => x.query.sha?.slice(0, 7))))
   check("watch in a checkout: follows HEAD's push to success, exit 0", r.code === 0 && /Watching push 13 · /.test(r.stdout) && /All 1 required job on .* succeeded/.test(r.stdout), `exit=${r.code} ${r.stdout}`)
@@ -448,7 +448,7 @@ else {
   route = headRoute()
   r = await run(['watch', 'sample', '--json'], { cwd: repoDir })
   const ev = ndjson(r.stdout)
-  check('watch --json in a checkout: head → waiting (once) → target(source head) → end', ev[0].type === 'head' && ev[0].commitSha === HEAD && ev.filter((e) => e.type === 'waiting').length === 1 && ev.find((e) => e.type === 'target')?.source === 'head' && ev.pop().outcome === 'succeeded', r.stdout)
+  check('watch --json in a checkout: head → waiting (once) → target(source head) → end', ev[0].type === 'head' && ev[0].commitSha === HEAD && ev[0].commitSubject === 'Fix flaky test 🚀' && ev.filter((e) => e.type === 'waiting').length === 1 && ev.find((e) => e.type === 'target')?.source === 'head' && ev.pop().outcome === 'succeeded', r.stdout)
 
   route = headRoute({ never: true })
   r = await run(['watch', 'sample'], { cwd: repoDir, env: { QWIRQ_RECEIVE_WAIT_MS: '300' } })
@@ -477,6 +477,81 @@ else {
   check('outside a checkout: unchanged (newest push, no HEAD line)', r.code === 0 && !since(n)[0].query.sha && !r.stdout.includes('your HEAD'))
 }
 
+// ============ commit subjects (D4): after the short SHA, ellipsized to the terminal, safe ============
+{
+  const { displayWidth } = await import('../src/verbs/pipeline-shared.mjs')
+  const LONG = 'Fix the flaky retry test that races the reaper when two workers reclaim the same job at once under load'
+  const EMOJI = '🚀 Ship it ✨'
+  const loneSurrogate = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/
+  const fits = (s, cols) => s.split('\n').every((l) => displayWidth(l) <= cols)
+  const list = {
+    pushes: [push(10, SHA_B, [], { admission: 'rejected', rejectionCode: 'queue_full', commitSubject: EMOJI }), push(9, SHA_A, [31], { commitSubject: LONG })],
+    jobs: [job(31, 'test', 'running', 1)], nextCursor: null, updatedAt: AT,
+  }
+  route = () => [200, list]
+  let r = await run(['jobs', 'sample'])
+  const headA = r.stdout.split('\n').find((l) => l.startsWith('a1b2c3d'))
+  const headB = r.stdout.split('\n').find((l) => l.startsWith('b2c3d4e'))
+  check('jobs: long subject after the sha7, ellipsized to 72 cols, branch kept', headA?.startsWith('a1b2c3d Fix the flaky') && headA.endsWith('…  · main') && displayWidth(headA) <= 72, `${displayWidth(headA)} ${headA}`)
+  check('jobs: emoji subject shown intact', headB === `b2c3d4e ${EMOJI}  · main`, headB)
+  check('jobs: job rows keep their alignment', /^ {2}31 {2}test {2}running · attempt 1$/m.test(r.stdout), r.stdout)
+  r = await run(['jobs', 'sample', '--json'])
+  check('jobs --json passes commitSubject through', JSON.parse(r.stdout).pushes[1].commitSubject === LONG)
+
+  route = () => [200, { ...list, pushes: [push(9, SHA_A, [31], { commitSubject: `${EMOJI} ${EMOJI} ${EMOJI} ${EMOJI} ${EMOJI}` })] }]
+  r = await run(['jobs', 'sample'], { env: { COLUMNS: '30' } })
+  const narrow = r.stdout.split('\n')[0]
+  check('emoji subject at 30 cols: fits, ends …, no split surrogate', displayWidth(narrow) <= 30 && narrow.endsWith('…  · main') && !loneSurrogate.test(narrow), `${displayWidth(narrow)} ${narrow}`)
+
+  route = () => [200, { ...list, pushes: [push(9, SHA_A, [31], { commitSubject: 'evil\u001b[31m red\r\nsecond line\u0007' })] }]
+  r = await run(['jobs', 'sample'])
+  check('subject control chars / newlines stripped (one printable line)', !/[\u0000-\u001f]/.test(r.stdout.replace(/\n/g, '')) && r.stdout.split('\n')[0] === 'a1b2c3d evil [31m red second line  · main', JSON.stringify(r.stdout.split('\n')[0]))
+
+  route = () => [200, { ...list, pushes: [push(9, SHA_A, [31], { commitSubject: null })] }]
+  r = await run(['jobs', 'sample'])
+  check('null subject → sha only', r.stdout.split('\n')[0] === 'a1b2c3d  · main', r.stdout.split('\n')[0])
+
+  // watch target line + JSON target
+  const subjRoute = (subject) => { const inner = watchRoute(); return (q) => {
+    const base = inner(q)
+    if (base[0] === 200) base[1].pushes = base[1].pushes.map((p) => (p.newSha === SHA_A ? { ...p, commitSubject: subject } : p))
+    return base
+  } }
+  route = subjRoute('Fix flaky test')
+  r = await run(['watch', 'sample', '--sha', SHA_A])
+  check('watch: target line shows the subject after the sha7', /^Watching push 9 · a1b2c3d Fix flaky test on main · 2 jobs\.$/m.test(r.stdout) && r.code === 0, r.stdout.split('\n')[0])
+  route = subjRoute(LONG)
+  r = await run(['watch', 'sample', '--sha', SHA_A])
+  const tl = r.stdout.split('\n')[0]
+  check('watch: long subject ellipsized, the line still ends with branch + job count', displayWidth(tl) <= 72 && /… on main · 2 jobs\.$/.test(tl), `${displayWidth(tl)} ${tl}`)
+  route = subjRoute(EMOJI)
+  r = await run(['watch', 'sample', '--sha', SHA_A, '--json'])
+  check('watch --json: target carries commitSubject', ndjson(r.stdout)[0].commitSubject === EMOJI, r.stdout.split('\n')[0])
+  route = subjRoute(null)
+  r = await run(['watch', 'sample', '--sha', SHA_A, '--json'])
+  check('watch --json: target commitSubject null when absent', ndjson(r.stdout)[0].commitSubject === null)
+
+  // status latest push
+  const status = (subject) => ({
+    repository: { qid: '42', slug: 'sample', name: 'Sample' },
+    latestPush: { qid: '9', commitSha: SHA_A, ref: 'refs/heads/main', admission: 'accepted', rejectionCode: null, receivedAt: AT, pusherUserQID: '7', commitSubject: subject },
+    checks: [], counts: { queued: 0, running: 0, failed: 0 }, attention: null, updatedAt: AT,
+  })
+  route = () => [200, status(LONG)]
+  r = await run(['repo', 'status', 'sample'])
+  const lp = r.stdout.split('\n').find((l) => l.startsWith('Latest push'))
+  check('status: latest push subject ellipsized to 72; branch, admission, time on the next line', displayWidth(lp) <= 72 && lp.startsWith('Latest push: 9 · a1b2c3d Fix the') && lp.endsWith('…') && /^Latest push: .*\n {2}on main · admitted · /m.test(r.stdout), `${displayWidth(lp)} ${lp}`)
+  route = () => [200, status(EMOJI)]
+  r = await run(['project', 'status', 'sample'])
+  check('status: emoji subject intact', r.stdout.includes(`Latest push: 9 · a1b2c3d ${EMOJI}\n  on main · admitted`), r.stdout)
+  route = () => [200, status(null)]
+  r = await run(['project', 'status', 'sample'])
+  check('status: null subject → sha only', /Latest push: 9 · a1b2c3d\n {2}on main · admitted/.test(r.stdout))
+  r = await run(['project', 'status', 'sample', '--json'])
+  check('status --json passes commitSubject through (null)', JSON.parse(r.stdout).latestPush.commitSubject === null)
+  check('every subject line fits 72 cols', fits(headA, 72) && fits(tl, 72) && fits(lp, 72))
+}
+
 // ============ project status / repo status ============
 {
   const status = {
@@ -490,7 +565,7 @@ else {
   let r = await run(['project', 'status', 'sample'])
   check('project status GETs /api/v1/projects/<slug>/status', since(n)[0]?.path === '/api/v1/projects/sample/status')
   check('project status: Now line names the job and the next command', /Now: test is running \(job 31\)\. Follow: qwirq jobs logs 31 --attempt 2 --follow/.test(r.stdout), r.stdout)
-  check('project status: latest push + checks + counts', /Latest push: 9 · a1b2c3d on main · admitted/.test(r.stdout) && /lint\s+succeeded/.test(r.stdout) && /1 running · 0 queued · 0 failed/.test(r.stdout))
+  check('project status: latest push + checks + counts', /Latest push: 9 · a1b2c3d\n {2}on main · admitted/.test(r.stdout) && /lint\s+succeeded/.test(r.stdout) && /1 running · 0 queued · 0 failed/.test(r.stdout))
   check('project status: no release/channel words (M0 has none)', !/release|channel|install/i.test(r.stdout))
   n = reqs.length
   r = await run(['repo', 'status', 'sample', '--json'])

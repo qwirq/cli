@@ -159,3 +159,40 @@ export function bytes(n) {
 }
 
 export const pad = (s, w) => String(s).padEnd(w)
+
+// --- commit subjects (D4): one line, terminal-safe, ellipsized to the terminal width ---
+
+const WIDE = /\p{Extended_Pictographic}|\p{Regional_Indicator}|[\u1100-\u115F\u2E80-\uA4CF\uAC00-\uD7A3\uF900-\uFAFF\uFE30-\uFE4F\uFF00-\uFF60\uFFE0-\uFFE6]/u
+const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+const graphemes = (s) => Array.from(segmenter.segment(s), (x) => x.segment)
+
+/** Terminal columns a string occupies (emoji / East Asian wide = 2; a grapheme never splits). */
+export const displayWidth = (s) => graphemes(String(s)).reduce((w, g) => w + (WIDE.test(g) ? 2 : 1), 0)
+
+/** Columns to fit a line into: the TTY width, else $COLUMNS, else 72. */
+export const termWidth = () => process.stdout.columns || Number(process.env.COLUMNS) || 72
+
+/** A subject as one printable line: control characters (incl. escape sequences' ESC) dropped, whitespace folded. */
+export const cleanSubject = (s) => (typeof s === 'string' ? s.replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ').replace(/\s+/g, ' ').trim() : '')
+
+/** Cut `s` to at most `max` columns, ending in "…" when cut; whole graphemes only. */
+export function ellipsize(s, max) {
+  if (displayWidth(s) <= max) return s
+  let out = ''
+  let w = 0
+  for (const g of graphemes(s)) {
+    const gw = WIDE.test(g) ? 2 : 1
+    if (w + gw > max - 1) break
+    out += g
+    w += gw
+  }
+  return out.trimEnd() + '…'
+}
+
+/** `before` + " subject" + `after`, the subject ellipsized so the line fits the terminal (never < 10 cols). */
+export function withSubject(before, subject, after = '') {
+  const s = cleanSubject(subject)
+  if (!s) return before + after
+  const budget = Math.max(10, termWidth() - displayWidth(before) - displayWidth(after) - 1)
+  return `${before} ${ellipsize(s, budget)}${after}`
+}

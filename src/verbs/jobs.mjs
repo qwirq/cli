@@ -8,7 +8,7 @@ import { apiFetch } from '../api.mjs'
 import {
   EXIT, TERMINAL, NOT_SUCCESS, POLL_MS, UsageError, Interrupted, interruptible, sleep, pollGet, reportError,
   flagStr, attemptFlag, qs, sha7, branch, stateWord, queuedWords, jobPhrase, rejectionWords, clock, when, bytes, pad,
-  stdio,
+  stdio, withSubject,
 } from './pipeline-shared.mjs'
 
 const USAGE = {
@@ -64,7 +64,8 @@ async function list(repo, flags, json, io) {
 
   for (const g of ordered) {
     const ref = g.pushes[0]?.ref
-    io.out(`${sha7(g.sha)}${ref ? `  ${branch(ref)}` : ''}`)
+    const subject = g.pushes.find((p) => p.commitSubject)?.commitSubject
+    io.out(withSubject(sha7(g.sha), subject, ref ? `  · ${branch(ref)}` : ''))
     for (const p of g.pushes) {
       io.out(p.admission === 'rejected'
         ? `  push ${p.qid} · not admitted: ${rejectionWords(p.rejectionCode)} · ${when(p.receivedAt)}`
