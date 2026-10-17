@@ -1,6 +1,6 @@
-# vendored: @qwirq/manifest@0.4.0
+# vendored: @qwirq/manifest@0.5.0
 
-This is a **vendored copy** of `@qwirq/manifest@0.4.0` (`dist/` runtime + `schemas/`), inlined so the
+This is a **vendored copy** of `@qwirq/manifest@0.5.0` (`dist/` runtime + `schemas/`), inlined so the
 public `qwirq/cli` installs from a clean machine with **no `@qwirq:registry` override and no registry
 token**. `@qwirq/manifest` is gated (private registry: 0.4.0 lives on registry.qwirq.com, older versions on
 GitHub Packages); a published `dependencies` entry on
@@ -14,9 +14,11 @@ Layout mirrors the upstream package so `validate.js`'s `path.join(here, '..', 's
 'qwirq.schema.json')` resolves (the #241 dist/schemas-sibling landmine): keep `dist/` and `schemas/`
 siblings.
 
-Copy EVERY `dist/*.js` — `index.js` imports `./pipeline.js` (0.4.0, M0 pipeline normalizer), so a
-missing module breaks every import of the runtime.
+Copy EVERY `dist/*.js` (9 files in 0.5.0: builds, grammar, index, pipeline, plan, profiles, registry,
+types, validate). `index.js` imports its siblings, so one missing module breaks every import of the
+runtime.
 
 To refresh: rebuild `lib/manifest` (`npm run build`) and re-copy `dist/*.js` + `schemas/*.json` here.
 Source of truth stays `lib/manifest`; this is a packaging mirror for the public install path only.
-0.4.0 copied from `lib/manifest` @ d521b67 (`m0/pipeline-manifest`: 205bd77 + review fixes).
+0.5.0 copied from `lib/manifest` @ 410cbf3 (`m1m2/manifest-05`, not yet published).
+
