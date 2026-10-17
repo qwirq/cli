@@ -95,15 +95,23 @@ const gaps = logReqs.slice(1).map((s, i) => s.at - logReqs[i].at)
 out(`info  bin=${BIN}`)
 out(`info  ${logReqs.length} log polls in ${elapsed} ms; gap between polls median ${median(gaps)} ms, max ${Math.max(...gaps)} ms (500 ms poll cadence); keychain spawns ${r.spawns}`)
 check(`follow over ${POLLS + 1} polls exits 0`, r.code === 0, `exit=${r.code} ${r.stderr.trim().split('\n').slice(-3).join(' | ')}`)
-check('every request carried the stored token', seen.length >= POLLS + 2 && seen.every((s) => s.auth === `Bearer ${TOKEN}`))
+// expected traffic for one follow: POLLS non-terminal log pages + 1 terminal page + 1 job read
+const EXPECTED = { log: POLLS + 1, job: 1 }
+const counts = (list) => ({ log: list.filter((s) => s.path.endsWith('/log')).length, job: list.filter((s) => s.path === '/api/v1/pipeline/jobs/31').length, total: list.length })
+const c1 = counts(seen)
+check(`control: the mock saw the expected requests (${EXPECTED.log} log + ${EXPECTED.job} job)`, c1.log === EXPECTED.log && c1.job === EXPECTED.job && c1.total === EXPECTED.log + EXPECTED.job, JSON.stringify(c1))
+check('control: the spawn counter is live (preload loaded and saw the keychain helper)', Number.isInteger(r.spawns) && r.spawns >= 1, `spawns=${r.spawns}`)
+check('every request carried the stored token', c1.total > 0 && seen.every((s) => s.auth === `Bearer ${TOKEN}`))
 check('the keychain was touched exactly once for the whole follow', r.spawns === 1, `spawns=${r.spawns}`)
 
 // --- 2. QWIRQ_TOKEN still wins, and never touches the keychain ---
 polls = 0
 seen.length = 0
 const r2 = await run(['jobs', 'logs', '31', '--attempt', '1', '--follow'], { ...baseEnv(home), QWIRQ_TOKEN: 'qwirq_pat_FROM_ENV', QWIRQ_POLL_MS: '20' })
-check('QWIRQ_TOKEN precedence: every request uses the env token', r2.code === 0 && seen.every((s) => s.auth === 'Bearer qwirq_pat_FROM_ENV'))
-check('QWIRQ_TOKEN: zero keychain spawns', r2.spawns === 0, `spawns=${r2.spawns}`)
+const c2 = counts(seen)
+check('QWIRQ_TOKEN run made the same, non-zero request count', c2.log === EXPECTED.log && c2.job === EXPECTED.job && c2.total === EXPECTED.log + EXPECTED.job, JSON.stringify(c2))
+check('QWIRQ_TOKEN precedence: every request uses the env token', r2.code === 0 && c2.total > 0 && seen.every((s) => s.auth === 'Bearer qwirq_pat_FROM_ENV'))
+check('QWIRQ_TOKEN: zero keychain spawns (counter present in this run too)', Number.isInteger(r2.spawns) && r2.spawns === 0, `spawns=${r2.spawns}`)
 server.close()
 
 // --- 3. in-process: login (writeToken) and logout (clearConfig) invalidate the memo ---
