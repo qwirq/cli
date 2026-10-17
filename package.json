@@ -1,6 +1,6 @@
 {
   "name": "@qwirq/cli",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "type": "module",
   "bin": {
     "qwirq": "bin/qwirq.mjs"
@@ -27,7 +27,8 @@
     "verify:identity-guard": "node scripts/verify-identity-guard.mjs",
     "verify:pipeline-cli": "node scripts/verify-pipeline-cli.mjs",
     "verify:token-cache": "node scripts/verify-token-cache.mjs",
-    "verify:release-cli": "node scripts/verify-release-cli.mjs"
+    "verify:release-cli": "node scripts/verify-release-cli.mjs",
+    "verify:signing-cli": "node scripts/verify-signing-cli.mjs"
   },
   "dependencies": {
     "yaml": "^2.4.5"

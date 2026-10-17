@@ -15,6 +15,7 @@ import { statusVerb } from '../src/verbs/project-status.mjs'
 import { buildVerb, buildsVerb } from '../src/verbs/build.mjs'
 import { releaseVerb } from '../src/verbs/release.mjs'
 import { channelVerb } from '../src/verbs/channel.mjs'
+import { signingVerb } from '../src/verbs/signing.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -153,6 +154,12 @@ const HELP = `qwirq — Knowledge (Texere) + Secrets from the terminal
   qwirq channel pause <repo> <channel> --expected-revision <n>    stop auto-publish (owner)
   qwirq channel resume <repo> <channel> --expected-revision <n>   turn auto-publish back on (owner)
   qwirq channel link <repo> <channel> [--json]   the permanent app page URL to share (never a download URL)
+  qwirq signing status <repo> [--json]   signing identities: certificate (imported / approved), pinned channels
+  qwirq signing identity create <repo> --name <name> --app <applicationId> --cert <sha256> --secret-prefix <prefix>
+                                    register a key imported OFFLINE (import-eas-keystore.mjs --prefix); no key material is sent
+  qwirq signing approve <repo> <identity> --cert <sha256>   approve its certificate (must equal the imported digest; owner)
+  qwirq signing pin <repo> <identity> <channel>     sign <channel> with the approved certificate (owner)
+  qwirq signing unpin <repo> <identity> <channel>   stop signing <channel> (its releases refuse until pinned again)
 
   qwirq data status                 is there an app database for your company yet?
   qwirq data provision              create your company's isolated app database
@@ -233,7 +240,9 @@ timed out, or (watch) was skipped, or the push was not admitted (optional failur
 build/release/channel: same codes. 0 success (a waited publish: published); 1 the publication or recovery
 you waited on was rejected, went stale, or failed; 2 usage, auth, permission (incl. publication_forbidden:
 agent tokens never publish), not-found, conflict (incl. stale_channel), or connection error; --json prints
-{code,status,message} on stderr; 130 Ctrl+C stopped watching (publication continues on the server).`
+{code,status,message} on stderr; 130 Ctrl+C stopped watching (publication continues on the server).
+signing: 0 success; 2 usage, auth, permission (incl. publication_forbidden: agent tokens never change signing),
+not-found, conflict (signing_mismatch, signing_not_configured, signing_conflict), or connection error.`
 
 function indentTree(nodes, depth, lines) {
   for (const n of nodes || []) {
@@ -464,6 +473,8 @@ async function main() {
     case 'release': { process.exitCode = await releaseVerb(positional, flags); return }
 
     case 'channel': { process.exitCode = await channelVerb(positional, flags); return }
+
+    case 'signing': { process.exitCode = await signingVerb(positional, flags); return }
 
     case 'repo':
     case 'repository': {
