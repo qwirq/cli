@@ -71,6 +71,11 @@ const neither = validateManifest(parseManifestText('id: ok\nname: X'))
 check('neither provides nor pipeline -> error', neither.some((e) => /provides/.test(e) && /pipeline/.test(e)), neither.join(' | '))
 const badAdapter = planPipeline(parseManifestText(pipelineOnly.replace('adapter: command', 'adapter: gradle')))
 check('unknown adapter -> adapter_unknown', !badAdapter.ok && badAdapter.issues.some((i) => i.code === 'adapter_unknown'), JSON.stringify(badAdapter))
+// 0.5.0 (vendored 410cbf3): network profiles + the build/channel planner ship in the runtime.
+const deps = parseManifestText(pipelineOnly.replace('network: none', 'network: dependencies'))
+check('0.5.0: step network "dependencies" validates and plans', validateManifest(deps).length === 0 && planPipeline(deps).ok, validateManifest(deps).join(' | '))
+const rt = await import('../vendor/manifest/dist/index.js')
+check('0.5.0: runtime exports planBuilds + normalizeJobPlans + NETWORK_PROFILES', typeof rt.planBuilds === 'function' && typeof rt.normalizeJobPlans === 'function' && rt.NETWORK_PROFILES != null)
 
 console.log('')
 console.log(fail === 0 ? 'ALL PASS' : `${fail} FAILED`)
